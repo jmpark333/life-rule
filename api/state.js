@@ -5,8 +5,7 @@ const lib = require('./_lib');
 module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     try {
-      const state = await lib.readState();
-      return lib.send(res, 200, { ok: true, state: state });
+      return lib.send(res, 200, { ok: true, state: await lib.readState() });
     } catch (err) {
       return lib.send(res, 503, { ok: false, error: 'storage-unavailable' });
     }
@@ -26,49 +25,37 @@ module.exports = async function handler(req, res) {
     return lib.send(res, 400, { ok: false, error: 'bad-request' });
   }
 
-  let state;
   try {
-    state = await lib.readState();
+    if (body.action === 'check') {
+      const date = String(body.date || '');
+      const ruleId = String(body.ruleId || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !ruleId) {
+        return lib.send(res, 400, { ok: false, error: 'bad-request' });
+      }
+      const rules = await lib.readRules();
+      const rule = rules.find(function (r) { return r.id === ruleId; });
+      if (!rule || rule.archived) {
+        return lib.send(res, 409, { ok: false, error: 'rule-not-found', state: await lib.readState() });
+      }
+      await lib.setCheck(date, ruleId, body.value === true);
+    } else if (body.action === 'rules') {
+      const rules = lib.normalizeRules(body.rules);
+      if (!rules.length) {
+        return lib.send(res, 400, { ok: false, error: 'no-rules', state: await lib.readState() });
+      }
+      await lib.writeRules(rules);
+    } else if (body.action === 'import') {
+      const next = lib.normalizeState(body.state);
+      if (!next.rules.length) {
+        return lib.send(res, 400, { ok: false, error: 'no-rules', state: await lib.readState() });
+      }
+      await lib.replaceAll(next);
+    } else {
+      return lib.send(res, 400, { ok: false, error: 'unknown-action' });
+    }
+
+    return lib.send(res, 200, { ok: true, state: await lib.readState() });
   } catch (err) {
     return lib.send(res, 503, { ok: false, error: 'storage-unavailable' });
   }
-
-  if (body.action === 'check') {
-    const date = String(body.date || '');
-    const ruleId = String(body.ruleId || '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !ruleId) {
-      return lib.send(res, 400, { ok: false, error: 'bad-request' });
-    }
-    const rule = state.rules.find(function (r) { return r.id === ruleId; });
-    if (!rule || rule.archived) {
-      return lib.send(res, 409, { ok: false, error: 'rule-not-found', state: state });
-    }
-    const day = state.entries[date] || {};
-    if (body.value === true) day[ruleId] = true;
-    else delete day[ruleId];
-    if (Object.keys(day).length) state.entries[date] = day;
-    else delete state.entries[date];
-  } else if (body.action === 'rules') {
-    const next = lib.normalizeState({ rules: body.rules, entries: state.entries });
-    if (!next.rules.length) {
-      return lib.send(res, 400, { ok: false, error: 'no-rules', state: state });
-    }
-    state.rules = next.rules;
-  } else if (body.action === 'import') {
-    const next = lib.normalizeState(body.state);
-    if (!next.rules.length) {
-      return lib.send(res, 400, { ok: false, error: 'no-rules', state: state });
-    }
-    state = next;
-  } else {
-    return lib.send(res, 400, { ok: false, error: 'unknown-action' });
-  }
-
-  try {
-    await lib.writeState(state);
-  } catch (err) {
-    return lib.send(res, 503, { ok: false, error: 'storage-unavailable' });
-  }
-
-  return lib.send(res, 200, { ok: true, state: state });
 };

@@ -28,6 +28,8 @@
   main { max-width: 620px; margin: 0 auto; padding: 28px 16px 72px; }
   .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
   .topbar h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+  .topbar-right { display: flex; align-items: center; gap: 8px; }
+  .synced { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .card {
     background: var(--card);
     border: 1px solid var(--line);
@@ -136,7 +138,10 @@
 <main>
   <header class="topbar">
     <h1>life-rule</h1>
-    <button class="btn ghost" id="manageBtn" type="button" disabled>규칙 관리</button>
+    <div class="topbar-right">
+      <span class="synced" id="syncNote"></span>
+      <button class="btn ghost" id="manageBtn" type="button" disabled>규칙 관리</button>
+    </div>
   </header>
 
   <section class="card" aria-labelledby="dayLabel">
@@ -287,6 +292,7 @@
   var view = { year: today.getFullYear(), month: today.getMonth() };
   var token = '';
   var busy = false;
+  var writeSeq = 0;
   var pendingAuth = null;
 
   try { token = window.sessionStorage.getItem(TOKEN_KEY) || ''; } catch (err) { token = ''; }
@@ -320,6 +326,7 @@
     authError: document.getElementById('authError'),
     authSubmit: document.getElementById('authSubmit'),
     authCancel: document.getElementById('authCancel'),
+    syncNote: document.getElementById('syncNote'),
     toast: document.getElementById('toast')
   };
 
@@ -428,7 +435,9 @@
       }
       if (result.status === 401) { saveToken(''); toast('비밀번호 확인이 만료되었습니다.'); return false; }
       if (!result.data || !result.data.ok) { toast(message || '저장하지 못했습니다.'); return false; }
+      writeSeq += 1;
       state = result.data.state;
+      markSynced();
       renderAll();
       return true;
     } catch (err) {
@@ -811,7 +820,13 @@
   function poll() {
     if (document.visibilityState !== 'visible') return;
     if (busy || !state || el.dialog.open || el.authDialog.open) return;
-    fetchState().then(renderAll).catch(function () { /* next poll retries */ });
+    var seq = writeSeq;
+    fetchState()
+      .then(function () {
+        if (seq !== writeSeq) return; // a write landed while this read was in flight
+        renderAll();
+      })
+      .catch(function () { /* next poll retries */ });
   }
 
   window.setInterval(poll, POLL_MS);

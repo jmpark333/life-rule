@@ -2,7 +2,9 @@
 
 const crypto = require('node:crypto');
 
-const STATE_KEY = 'life-rule:state';
+const RULES_KEY = 'life-rule:rules';
+const CHECK_KEY = 'life-rule:check';
+const LEGACY_KEY = 'life-rule:state';
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_FAILS = 10;
 const FAIL_WINDOW_SEC = 600;
@@ -33,18 +35,23 @@ async function command(path, body) {
   return response.json();
 }
 
-async function readState() {
-  const reply = await command('/get/' + encodeURIComponent(STATE_KEY));
-  if (!reply || reply.result == null) return seedState();
-  try {
-    return normalizeState(JSON.parse(reply.result));
-  } catch (err) {
-    return seedState();
-  }
+async function pipeline(commands) {
+  const url = process.env.KV_REST_API_URL;
+  const token = process.env.KV_REST_API_TOKEN;
+  if (!url || !token) throw new Error('redis-not-configured');
+  if (!commands.length) return [];
+
+  const response = await fetch(url + '/pipeline', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(commands)
+  });
+  if (!response.ok) throw new Error('redis-' + response.status);
+  return response.json();
 }
 
-async function writeState(state) {
-  await command('/set/' + encodeURIComponent(STATE_KEY), JSON.stringify(state));
+function field(date, ruleId) {
+  return date + '|' + ruleId;
 }
 
 /* ---------- state helpers ---------- */
@@ -76,41 +83,138 @@ function computeStreak(entries, ruleId, day) {
   return streak;
 }
 
-function normalizeState(raw) {
-  const out = { version: 1, rules: [], entries: {} };
-  if (!raw || typeof raw !== 'object') return out;
-
-  const rules = Array.isArray(raw.rules) ? raw.rules : [];
+function normalizeRules(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const out = [];
   const seen = new Set();
-  rules.forEach(function (rule, index) {
+  list.forEach(function (rule, index) {
     if (!rule || typeof rule !== 'object') return;
     if (typeof rule.name !== 'string' || !rule.name.trim()) return;
     const id = typeof rule.id === 'string' && rule.id ? rule.id : 'rule-' + index + '-' + crypto.randomBytes(3).toString('hex');
     if (seen.has(id)) return;
     seen.add(id);
-    out.rules.push({
+    out.push({
       id: id,
       name: rule.name.trim().slice(0, 60),
-      color: typeof rule.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(rule.color) ? rule.color : PALETTE[out.rules.length % PALETTE.length],
+      color: typeof rule.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(rule.color) ? rule.color : PALETTE[out.length % PALETTE.length],
       archived: rule.archived === true
     });
   });
-
-  const entries = raw.entries && typeof raw.entries === 'object' ? raw.entries : {};
-  Object.keys(entries).forEach(function (key) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
-    const day = entries[key];
-    if (!day || typeof day !== 'object') return;
-    const clean = {};
-    Object.keys(day).forEach(function (ruleId) { if (day[ruleId] === true) clean[ruleId] = true; });
-    if (Object.keys(clean).length) out.entries[key] = clean;
-  });
-
   return out;
 }
 
-function seedState() {
-  return normalizeState({ rules: DEFAULT_RULES, entries: {} });
+function normalizeEntries(raw, rules) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  const known = new Set(rules.map(function (rule) { return rule.id; }));
+  Object.keys(raw).forEach(function (date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    const day = raw[date];
+    if (!day || typeof day !== 'object') return;
+    const clean = {};
+    Object.keys(day).forEach(function (ruleId) {
+      if (day[ruleId] === true && known.has(ruleId)) clean[ruleId] = true;
+    });
+    if (Object.keys(clean).length) out[date] = clean;
+  });
+  return out;
+}
+
+function normalizeState(raw) {
+  if (!raw || typeof raw !== 'object') return { version: 1, rules: [], entries: {} };
+  const rules = normalizeRules(raw.rules);
+  return { version: 1, rules: rules, entries: normalizeEntries(raw.entries, rules) };
+}
+
+function seedRules() {
+  return normalizeRules(DEFAULT_RULES);
+}
+
+/* ---------- reads / writes ---------- */
+
+async function readRules() {
+  const reply = await command('/get/' + encodeURIComponent(RULES_KEY));
+  if (reply && reply.result != null) {
+    try {
+      return normalizeRules(JSON.parse(reply.result));
+    } catch (err) {
+      return seedRules();
+    }
+  }
+
+  const legacy = await command('/get/' + encodeURIComponent(LEGACY_KEY));
+  if (legacy && legacy.result != null) {
+    let migrated;
+    try {
+      migrated = normalizeState(JSON.parse(legacy.result));
+    } catch (err) {
+      migrated = { version: 1, rules: seedRules(), entries: {} };
+    }
+    if (!migrated.rules.length) migrated.rules = seedRules();
+    await writeRules(migrated.rules);
+    await replaceEntries(migrated.entries);
+    await command('/del/' + encodeURIComponent(LEGACY_KEY));
+    return migrated.rules;
+  }
+
+  const seeded = seedRules();
+  await writeRules(seeded);
+  return seeded;
+}
+
+async function readEntries() {
+  const reply = await command('/hgetall/' + encodeURIComponent(CHECK_KEY));
+  const flat = Array.isArray(reply && reply.result) ? reply.result : [];
+  const entries = {};
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    const parts = String(flat[i]).split('|');
+    if (parts.length !== 2) continue;
+    const date = parts[0];
+    const ruleId = parts[1];
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !ruleId) continue;
+    if (!entries[date]) entries[date] = {};
+    entries[date][ruleId] = true;
+  }
+  return entries;
+}
+
+async function readState() {
+  const rules = await readRules();
+  const entries = await readEntries();
+  return { version: 1, rules: rules, entries: entries };
+}
+
+async function writeRules(rules) {
+  await command('/set/' + encodeURIComponent(RULES_KEY), JSON.stringify(rules));
+}
+
+async function setCheck(date, ruleId, value) {
+  const key = encodeURIComponent(CHECK_KEY);
+  const name = field(date, ruleId);
+  if (value) await command('/hset/' + key + '/' + encodeURIComponent(name) + '/1');
+  else await command('/hdel/' + key + '/' + encodeURIComponent(name));
+}
+
+async function replaceEntries(entries) {
+  const commands = [['DEL', CHECK_KEY]];
+  Object.keys(entries).forEach(function (date) {
+    Object.keys(entries[date]).forEach(function (ruleId) {
+      if (entries[date][ruleId] === true) commands.push(['HSET', CHECK_KEY, field(date, ruleId), '1']);
+    });
+  });
+  await pipeline(commands);
+}
+
+async function replaceAll(state) {
+  const norm = normalizeState(state);
+  if (!norm.rules.length) norm.rules = seedRules();
+  const commands = [['DEL', CHECK_KEY], ['SET', RULES_KEY, JSON.stringify(norm.rules)]];
+  Object.keys(norm.entries).forEach(function (date) {
+    Object.keys(norm.entries[date]).forEach(function (ruleId) {
+      commands.push(['HSET', CHECK_KEY, field(date, ruleId), '1']);
+    });
+  });
+  await pipeline(commands);
 }
 
 /* ---------- auth ---------- */
@@ -182,7 +286,7 @@ async function recordFail(ip) {
     if (Number(reply && reply.result) === 1) {
       await command('/expire/' + encodeURIComponent(key) + '/' + FAIL_WINDOW_SEC);
     }
-  } catch (err) { /* rate limiting is best effort */ }
+  } catch (err) { /* best effort */ }
 }
 
 async function clearFails(ip) {
@@ -209,11 +313,14 @@ function readBody(req) {
 }
 
 module.exports = {
-  STATE_KEY: STATE_KEY,
   readState: readState,
-  writeState: writeState,
+  readRules: readRules,
+  readEntries: readEntries,
+  writeRules: writeRules,
+  setCheck: setCheck,
+  replaceAll: replaceAll,
   normalizeState: normalizeState,
-  seedState: seedState,
+  normalizeRules: normalizeRules,
   computeStreak: computeStreak,
   dateKey: dateKey,
   passwordMatches: passwordMatches,
