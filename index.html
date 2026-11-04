@@ -348,11 +348,17 @@
     } catch (err) { /* session storage unavailable */ }
   }
 
+  function markSynced() {
+    var now = new Date();
+    el.syncNote.textContent = '동기화 ' + pad2(now.getHours()) + ':' + pad2(now.getMinutes()) + ':' + pad2(now.getSeconds());
+  }
+
   async function fetchState() {
     var response = await fetch('/api/state', { cache: 'no-store' });
     var data = await response.json();
     if (!data || !data.ok) throw new Error((data && data.error) || 'load-failed');
     state = data.state;
+    markSynced();
     return state;
   }
 
