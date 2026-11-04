@@ -88,6 +88,7 @@
     border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer;
   }
   .btn:hover { background: var(--soft); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
   .ghost { border: 0; background: var(--soft); }
   .icon {
     font: inherit; font-size: 15px; width: 30px; height: 30px; border-radius: 9px;
@@ -109,18 +110,19 @@
   .section-label { margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
   .manage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .manage-list li { display: flex; align-items: center; gap: 6px; }
-  .manage-list input {
+  .manage-list input, .add-row input, .auth-field input {
     flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 7px 9px;
     border: 1px solid var(--line); border-radius: 9px; background: #fff; color: inherit;
   }
   .add-row { display: flex; gap: 6px; }
-  .add-row input {
-    flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 7px 9px;
-    border: 1px solid var(--line); border-radius: 9px; background: #fff; color: inherit;
-  }
   .backup { display: flex; flex-wrap: wrap; gap: 6px; }
   .note { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
   .archived-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13.5px; }
+  .auth-body { padding: 18px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+  .auth-body p { margin: 0; font-size: 13px; color: var(--muted); }
+  .auth-field input { width: 100%; font-size: 16px; padding: 10px 12px; letter-spacing: 0.1em; }
+  .auth-error { margin: 0; font-size: 12.5px; color: #b91c1c; }
+  .auth-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
   .toast {
     position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 8px);
@@ -134,19 +136,20 @@
 <main>
   <header class="topbar">
     <h1>life-rule</h1>
-    <button class="btn ghost" id="manageBtn" type="button">규칙 관리</button>
+    <button class="btn ghost" id="manageBtn" type="button" disabled>규칙 관리</button>
   </header>
 
   <section class="card" aria-labelledby="dayLabel">
     <div class="daycard-head">
       <div>
         <p class="eyebrow" id="dayEyebrow">오늘</p>
-        <p class="daydate" id="dayLabel">—</p>
+        <p class="daydate" id="dayLabel">불러오는 중…</p>
       </div>
       <button class="btn ghost" id="todayBtn" type="button" hidden>오늘로</button>
     </div>
     <ul class="rules" id="ruleList"></ul>
     <p class="empty" id="ruleEmpty" hidden>규칙이 없습니다. 오른쪽 위 "규칙 관리"에서 추가해 주세요.</p>
+    <p class="empty" id="loadError" hidden>서버에서 기록을 불러오지 못했습니다. <button class="btn" id="retryBtn" type="button">다시 시도</button></p>
   </section>
 
   <section class="card" aria-labelledby="calTitle">
@@ -190,8 +193,26 @@
         <button class="btn" id="importBtn" type="button">JSON 가져오기</button>
         <input id="importFile" type="file" accept="application/json,.json" hidden>
       </div>
-      <p class="note">기록은 이 브라우저에만 저장됩니다. 브라우저 데이터를 지우면 함께 사라지므로, 가끔 내보내기로 백업해 두세요.</p>
+      <p class="note">기록은 서버에 저장되어 누구나 같은 내용을 봅니다. 규칙을 바꾸려면 비밀번호가 필요합니다.</p>
     </section>
+  </div>
+</dialog>
+
+<dialog id="authDialog">
+  <form method="dialog" class="dlg-head">
+    <h2>비밀번호</h2>
+    <button class="icon" value="cancel" aria-label="취소">✕</button>
+  </form>
+  <div class="auth-body">
+    <p id="authTitle">체크하려면 비밀번호가 필요합니다.</p>
+    <div class="auth-field">
+      <input id="authInput" type="password" inputmode="text" autocomplete="current-password" placeholder="비밀번호" aria-label="비밀번호">
+    </div>
+    <p class="auth-error" id="authError" hidden>비밀번호가 맞지 않습니다.</p>
+    <div class="auth-actions">
+      <button class="btn" id="authCancel" type="button">취소</button>
+      <button class="btn" id="authSubmit" type="button">확인</button>
+    </div>
   </div>
 </dialog>
 
@@ -201,15 +222,10 @@
 (function () {
   'use strict';
 
-  var STORAGE_KEY = 'life-rule:v1';
+  var TOKEN_KEY = 'life-rule:token';
   var WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
-  var PALETTE = ['#4f46e5', '#f59e0b', '#0d9488', '#e11d48', '#7c3aed', '#0284c7'];
   var MAX_STREAK_DAYS = 3660;
-  var DEFAULT_RULES = [
-    { id: 'rule-sleep', name: '저녁 10시 30분 취침', color: '#4f46e5' },
-    { id: 'rule-wake', name: '아침 6시 기상', color: '#f59e0b' },
-    { id: 'rule-leave', name: '7시 전 집 나서기', color: '#0d9488' }
-  ];
+  var POLL_MS = 20000;
 
   /* ---------- pure helpers ---------- */
 
@@ -240,8 +256,6 @@
     return !!(day && day[ruleId] === true);
   }
 
-  // A checked day extends the streak backwards; an unchecked day ends it.
-  // "Today" being unchecked does not erase yesterday's streak (the day is not over yet).
   function computeStreak(entries, ruleId, day) {
     var cursor = isChecked(entries, dateKey(day), ruleId) ? day : addDays(day, -1);
     var streak = 0;
@@ -262,481 +276,550 @@
     return cells;
   }
 
-  function normalizeState(raw) {
-    var out = { version: 1, rules: [], entries: {} };
-    if (!raw || typeof raw !== 'object') return out;
-    var rules = Array.isArray(raw.rules) ? raw.rules : [];
-    var seen = {};
-    rules.forEach(function (rule, index) {
-      if (!rule || typeof rule !== 'object') return;
-      if (typeof rule.name !== 'string' || !rule.name.trim()) return;
-      var id = typeof rule.id === 'string' && rule.id ? rule.id : 'rule-' + index + '-' + Math.random().toString(36).slice(2, 8);
-      if (seen[id]) return;
-      seen[id] = true;
-      out.rules.push({
-        id: id,
-        name: rule.name.trim(),
-        color: typeof rule.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(rule.color) ? rule.color : PALETTE[out.rules.length % PALETTE.length],
-        archived: rule.archived === true
-      });
-    });
-    var entries = raw.entries && typeof raw.entries === 'object' ? raw.entries : {};
-    Object.keys(entries).forEach(function (key) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
-      var day = entries[key];
-      if (!day || typeof day !== 'object') return;
-      var clean = {};
-      Object.keys(day).forEach(function (ruleId) { if (day[ruleId] === true) clean[ruleId] = true; });
-      if (Object.keys(clean).length) out.entries[key] = clean;
-    });
-    return out;
-  }
-
-  function seedState() {
-    return normalizeState({
-      rules: DEFAULT_RULES.map(function (rule) { return { id: rule.id, name: rule.name, color: rule.color }; }),
-      entries: {}
-    });
-  }
-
-  var api = {
-    dateKey: dateKey,
-    parseKey: parseKey,
-    addDays: addDays,
-    isChecked: isChecked,
-    computeStreak: computeStreak,
-    monthMatrix: monthMatrix,
-    normalizeState: normalizeState,
-    seedState: seedState
-  };
-
-  if (typeof document === 'undefined') {
-    if (typeof module !== 'undefined' && module.exports) module.exports = api;
-    return;
-  }
+  if (typeof document === 'undefined') return;
 
   /* ---------- state ---------- */
 
-  function loadState() {
-    var raw = null;
-    try { raw = window.localStorage.getItem(STORAGE_KEY); } catch (err) { raw = null; }
-    if (!raw) return seedState();
-    try { return normalizeState(JSON.parse(raw)); } catch (err) { return seedState(); }
+  var state = null;
+  var today = todayDate();
+  var todayKey = dateKey(today);
+  var selectedKey = todayKey;
+  var view = { year: today.getFullYear(), month: today.getMonth() };
+  var token = '';
+  var busy = false;
+  var pendingAuth = null;
+
+  try { token = window.sessionStorage.getItem(TOKEN_KEY) || ''; } catch (err) { token = ''; }
+
+  var el = {
+    ruleList: document.getElementById('ruleList'),
+    ruleEmpty: document.getElementById('ruleEmpty'),
+    loadError: document.getElementById('loadError'),
+    retryBtn: document.getElementById('retryBtn'),
+    dayEyebrow: document.getElementById('dayEyebrow'),
+    dayLabel: document.getElementById('dayLabel'),
+    todayBtn: document.getElementById('todayBtn'),
+    calTitle: document.getElementById('calTitle'),
+    calGrid: document.getElementById('calGrid'),
+    legend: document.getElementById('legend'),
+    prevMonth: document.getElementById('prevMonth'),
+    nextMonth: document.getElementById('nextMonth'),
+    manageBtn: document.getElementById('manageBtn'),
+    dialog: document.getElementById('manageDialog'),
+    manageList: document.getElementById('manageList'),
+    archiveSection: document.getElementById('archiveSection'),
+    archiveList: document.getElementById('archiveList'),
+    newRuleName: document.getElementById('newRuleName'),
+    addRuleBtn: document.getElementById('addRuleBtn'),
+    exportBtn: document.getElementById('exportBtn'),
+    importBtn: document.getElementById('importBtn'),
+    importFile: document.getElementById('importFile'),
+    authDialog: document.getElementById('authDialog'),
+    authInput: document.getElementById('authInput'),
+    authTitle: document.getElementById('authTitle'),
+    authError: document.getElementById('authError'),
+    authSubmit: document.getElementById('authSubmit'),
+    authCancel: document.getElementById('authCancel'),
+    toast: document.getElementById('toast')
+  };
+
+  var toastTimer = null;
+  function toast(message) {
+    el.toast.textContent = message;
+    el.toast.classList.add('show');
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(function () { el.toast.classList.remove('show'); }, 2600);
   }
 
-  function init() {
-    var state = loadState();
-    var today = todayDate();
-    var todayKey = dateKey(today);
-    var selectedKey = todayKey;
-    var view = { year: today.getFullYear(), month: today.getMonth() };
+  /* ---------- server ---------- */
 
-    var el = {
-      ruleList: document.getElementById('ruleList'),
-      ruleEmpty: document.getElementById('ruleEmpty'),
-      dayEyebrow: document.getElementById('dayEyebrow'),
-      dayLabel: document.getElementById('dayLabel'),
-      todayBtn: document.getElementById('todayBtn'),
-      calTitle: document.getElementById('calTitle'),
-      calGrid: document.getElementById('calGrid'),
-      legend: document.getElementById('legend'),
-      prevMonth: document.getElementById('prevMonth'),
-      nextMonth: document.getElementById('nextMonth'),
-      manageBtn: document.getElementById('manageBtn'),
-      dialog: document.getElementById('manageDialog'),
-      manageList: document.getElementById('manageList'),
-      archiveSection: document.getElementById('archiveSection'),
-      archiveList: document.getElementById('archiveList'),
-      newRuleName: document.getElementById('newRuleName'),
-      addRuleBtn: document.getElementById('addRuleBtn'),
-      exportBtn: document.getElementById('exportBtn'),
-      importBtn: document.getElementById('importBtn'),
-      importFile: document.getElementById('importFile'),
-      toast: document.getElementById('toast')
-    };
+  function saveToken(value) {
+    token = value;
+    try {
+      if (value) window.sessionStorage.setItem(TOKEN_KEY, value);
+      else window.sessionStorage.removeItem(TOKEN_KEY);
+    } catch (err) { /* session storage unavailable */ }
+  }
 
-    var toastTimer = null;
-    function toast(message) {
-      el.toast.textContent = message;
-      el.toast.classList.add('show');
-      window.clearTimeout(toastTimer);
-      toastTimer = window.setTimeout(function () { el.toast.classList.remove('show'); }, 2200);
+  async function fetchState() {
+    var response = await fetch('/api/state', { cache: 'no-store' });
+    var data = await response.json();
+    if (!data || !data.ok) throw new Error((data && data.error) || 'load-failed');
+    state = data.state;
+    return state;
+  }
+
+  async function postState(payload) {
+    var response = await fetch('/api/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify(payload)
+    });
+    var data = await response.json().catch(function () { return null; });
+    return { status: response.status, data: data };
+  }
+
+  function askPassword(message) {
+    if (pendingAuth) { pendingAuth(false); pendingAuth = null; }
+    el.authTitle.textContent = message || '체크하려면 비밀번호가 필요합니다.';
+    el.authError.hidden = true;
+    el.authInput.value = '';
+    if (typeof el.authDialog.showModal === 'function') el.authDialog.showModal();
+    else el.authDialog.setAttribute('open', '');
+    window.setTimeout(function () { el.authInput.focus(); }, 30);
+    return new Promise(function (resolve) { pendingAuth = resolve; });
+  }
+
+  function closeAuth(result) {
+    if (typeof el.authDialog.close === 'function') el.authDialog.close();
+    else el.authDialog.removeAttribute('open');
+    if (pendingAuth) {
+      var resolve = pendingAuth;
+      pendingAuth = null;
+      resolve(result);
     }
+  }
 
-    function save() {
-      try {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-        return true;
-      } catch (err) {
-        toast('저장하지 못했습니다. 브라우저 저장 공간을 확인해 주세요.');
-        return false;
+  async function submitPassword() {
+    var password = el.authInput.value;
+    if (!password) { el.authError.hidden = true; el.authInput.focus(); return; }
+    el.authSubmit.disabled = true;
+    try {
+      var response = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: password })
+      });
+      var data = await response.json().catch(function () { return null; });
+      if (response.ok && data && data.ok && data.token) {
+        saveToken(data.token);
+        el.authError.hidden = true;
+        closeAuth(true);
+        return;
       }
+      el.authError.textContent = response.status === 429
+        ? '시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.'
+        : '비밀번호가 맞지 않습니다.';
+      el.authError.hidden = false;
+      el.authInput.select();
+    } catch (err) {
+      el.authError.textContent = '확인하지 못했습니다. 연결을 확인해 주세요.';
+      el.authError.hidden = false;
+    } finally {
+      el.authSubmit.disabled = false;
     }
+  }
 
-    function activeRules() {
-      return state.rules.filter(function (rule) { return !rule.archived; });
-    }
+  async function ensureToken() {
+    if (token) return true;
+    return askPassword();
+  }
 
-    function ruleById(id) {
-      for (var i = 0; i < state.rules.length; i += 1) if (state.rules[i].id === id) return state.rules[i];
-      return null;
-    }
-
-    function isToday() { return selectedKey === todayKey; }
-
-    /* ---------- rendering ---------- */
-
-    function renderDayCard() {
-      var date = parseKey(selectedKey);
-      el.dayEyebrow.textContent = isToday() ? '오늘' : '지난 기록';
-      el.dayLabel.textContent = date.getFullYear() + '년 ' + (date.getMonth() + 1) + '월 ' +
-        date.getDate() + '일 ' + WEEKDAYS[date.getDay()] + '요일';
-      el.todayBtn.hidden = isToday();
-
-      var rules = activeRules();
-      el.ruleList.textContent = '';
-      el.ruleEmpty.hidden = rules.length > 0;
-
-      rules.forEach(function (rule) {
-        var checked = isChecked(state.entries, selectedKey, rule.id);
-        var streak = computeStreak(state.entries, rule.id, date);
-
-        var li = document.createElement('li');
-        var button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'rule-btn';
-        button.style.setProperty('--rc', rule.color);
-        button.setAttribute('aria-pressed', checked ? 'true' : 'false');
-        button.setAttribute('aria-label', rule.name + ' — ' + (checked ? '지킴' : '안 지킴'));
-        button.dataset.ruleId = rule.id;
-
-        var dot = document.createElement('span');
-        dot.className = 'rdot';
-
-        var name = document.createElement('span');
-        name.className = 'rname';
-        name.textContent = rule.name;
-
-        var streakEl = document.createElement('span');
-        streakEl.className = 'rstk';
-        streakEl.textContent = streak > 0 ? '연속 ' + streak + '일' : '아직 없음';
-
-        var check = document.createElement('span');
-        check.className = 'rcheck';
-        check.textContent = '✓';
-
-        button.appendChild(dot);
-        button.appendChild(name);
-        button.appendChild(streakEl);
-        button.appendChild(check);
-        li.appendChild(button);
-        el.ruleList.appendChild(li);
-      });
-    }
-
-    function renderCalendar() {
-      el.calTitle.textContent = view.year + '년 ' + (view.month + 1) + '월';
-      var rules = activeRules();
-      el.calGrid.textContent = '';
-
-      monthMatrix(view.year, view.month).forEach(function (date) {
-        if (!date) {
-          var blank = document.createElement('div');
-          blank.className = 'cell';
-          blank.setAttribute('aria-hidden', 'true');
-          el.calGrid.appendChild(blank);
-          return;
-        }
-
-        var key = dateKey(date);
-        var isFuture = key > todayKey;
-        var checkedCount = 0;
-
-        var cell = document.createElement('button');
-        cell.type = 'button';
-        cell.className = 'cell';
-        cell.dataset.date = key;
-        cell.disabled = isFuture;
-        if (key === selectedKey) cell.classList.add('selected');
-        if (key === todayKey) cell.classList.add('today');
-
-        var dots = document.createElement('span');
-        dots.className = 'dots';
-        rules.forEach(function (rule) {
-          var checked = isChecked(state.entries, key, rule.id);
-          if (checked) checkedCount += 1;
-          var dot = document.createElement('i');
-          if (checked) dot.style.background = rule.color;
-          dots.appendChild(dot);
-        });
-        if (rules.length > 0 && checkedCount === rules.length) cell.classList.add('all-done');
-
-        var num = document.createElement('span');
-        num.className = 'num';
-        num.textContent = String(date.getDate());
-
-        var label = date.getMonth() + 1 + '월 ' + date.getDate() + '일, ' + checkedCount + '/' + rules.length + ' 지킴';
-        cell.setAttribute('aria-label', label);
-        if (key === selectedKey) cell.setAttribute('aria-current', 'date');
-
-        cell.appendChild(num);
-        cell.appendChild(dots);
-        el.calGrid.appendChild(cell);
-      });
-    }
-
-    function renderLegend() {
-      el.legend.textContent = '';
-      activeRules().forEach(function (rule) {
-        var li = document.createElement('li');
-        var dot = document.createElement('i');
-        dot.style.background = rule.color;
-        var text = document.createElement('span');
-        text.textContent = rule.name;
-        li.appendChild(dot);
-        li.appendChild(text);
-        el.legend.appendChild(li);
-      });
-    }
-
-    function renderAll() {
-      renderDayCard();
-      renderCalendar();
-      renderLegend();
-    }
-
-    /* ---------- actions ---------- */
-
-    function selectDate(key) {
-      if (key > todayKey) return;
-      selectedKey = key;
-      var date = parseKey(key);
-      view = { year: date.getFullYear(), month: date.getMonth() };
+  async function mutate(payload, message) {
+    if (busy) return false;
+    busy = true;
+    try {
+      if (!(await ensureToken())) return false;
+      var result = await postState(payload);
+      if (result.status === 401) {
+        saveToken('');
+        if (!(await ensureToken())) return false;
+        result = await postState(payload);
+      }
+      if (result.status === 401) { saveToken(''); toast('비밀번호 확인이 만료되었습니다.'); return false; }
+      if (!result.data || !result.data.ok) { toast(message || '저장하지 못했습니다.'); return false; }
+      state = result.data.state;
       renderAll();
+      return true;
+    } catch (err) {
+      toast('서버에 저장하지 못했습니다.');
+      return false;
+    } finally {
+      busy = false;
     }
+  }
 
-    function toggleRule(ruleId) {
-      if (selectedKey > todayKey) return;
-      var day = state.entries[selectedKey] || {};
-      if (day[ruleId]) delete day[ruleId];
-      else day[ruleId] = true;
+  /* ---------- rendering ---------- */
 
-      if (Object.keys(day).length) state.entries[selectedKey] = day;
-      else delete state.entries[selectedKey];
+  function activeRules() {
+    return (state ? state.rules : []).filter(function (rule) { return !rule.archived; });
+  }
 
-      if (save()) {
-        renderDayCard();
-        renderCalendar();
+  function ruleById(id) {
+    if (!state) return null;
+    for (var i = 0; i < state.rules.length; i += 1) if (state.rules[i].id === id) return state.rules[i];
+    return null;
+  }
+
+  function isToday() { return selectedKey === todayKey; }
+
+  function renderDayCard() {
+    var date = parseKey(selectedKey);
+    el.dayEyebrow.textContent = isToday() ? '오늘' : '지난 기록';
+    el.dayLabel.textContent = date.getFullYear() + '년 ' + (date.getMonth() + 1) + '월 ' +
+      date.getDate() + '일 ' + WEEKDAYS[date.getDay()] + '요일';
+    el.todayBtn.hidden = isToday();
+    el.loadError.hidden = !!state;
+
+    var rules = activeRules();
+    el.ruleList.textContent = '';
+    el.ruleEmpty.hidden = !state || rules.length > 0;
+
+    if (!state) return;
+
+    rules.forEach(function (rule) {
+      var checked = isChecked(state.entries, selectedKey, rule.id);
+      var streak = computeStreak(state.entries, rule.id, date);
+
+      var li = document.createElement('li');
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'rule-btn';
+      button.style.setProperty('--rc', rule.color);
+      button.setAttribute('aria-pressed', checked ? 'true' : 'false');
+      button.setAttribute('aria-label', rule.name + ' — ' + (checked ? '지킴' : '안 지킴'));
+      button.dataset.ruleId = rule.id;
+
+      var dot = document.createElement('span');
+      dot.className = 'rdot';
+
+      var name = document.createElement('span');
+      name.className = 'rname';
+      name.textContent = rule.name;
+
+      var streakEl = document.createElement('span');
+      streakEl.className = 'rstk';
+      streakEl.textContent = streak > 0 ? '연속 ' + streak + '일' : '아직 없음';
+
+      var check = document.createElement('span');
+      check.className = 'rcheck';
+      check.textContent = '✓';
+
+      button.appendChild(dot);
+      button.appendChild(name);
+      button.appendChild(streakEl);
+      button.appendChild(check);
+      li.appendChild(button);
+      el.ruleList.appendChild(li);
+    });
+  }
+
+  function renderCalendar() {
+    el.calTitle.textContent = view.year + '년 ' + (view.month + 1) + '월';
+    var rules = activeRules();
+    var entries = state ? state.entries : {};
+    el.calGrid.textContent = '';
+
+    monthMatrix(view.year, view.month).forEach(function (date) {
+      if (!date) {
+        var blank = document.createElement('div');
+        blank.className = 'cell';
+        blank.setAttribute('aria-hidden', 'true');
+        el.calGrid.appendChild(blank);
+        return;
       }
-    }
 
-    function nextColor() {
-      var used = activeRules().length + state.rules.filter(function (r) { return r.archived; }).length;
-      return PALETTE[used % PALETTE.length];
-    }
+      var key = dateKey(date);
+      var isFuture = key > todayKey;
+      var checkedCount = 0;
 
-    function openManage() {
-      rebuildManage();
-      if (typeof el.dialog.showModal === 'function') el.dialog.showModal();
-      else el.dialog.setAttribute('open', '');
-    }
+      var cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'cell';
+      cell.dataset.date = key;
+      cell.disabled = isFuture;
+      if (key === selectedKey) cell.classList.add('selected');
+      if (key === todayKey) cell.classList.add('today');
 
-    function rebuildManage() {
-      el.manageList.textContent = '';
-      activeRules().forEach(function (rule) {
-        var li = document.createElement('li');
-
-        var dot = document.createElement('span');
-        dot.className = 'rdot';
-        dot.style.borderColor = rule.color;
-        dot.style.background = rule.color;
-
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.maxLength = 40;
-        input.value = rule.name;
-        input.setAttribute('aria-label', '규칙 이름');
-        input.addEventListener('change', function () {
-          var name = input.value.trim();
-          if (!name) { input.value = rule.name; return; }
-          rule.name = name;
-          if (save()) renderAll();
-        });
-
-        var up = document.createElement('button');
-        up.type = 'button';
-        up.className = 'icon';
-        up.textContent = '↑';
-        up.setAttribute('aria-label', rule.name + ' 위로 이동');
-        up.addEventListener('click', function () { moveRule(rule.id, -1); });
-
-        var down = document.createElement('button');
-        down.type = 'button';
-        down.className = 'icon';
-        down.textContent = '↓';
-        down.setAttribute('aria-label', rule.name + ' 아래로 이동');
-        down.addEventListener('click', function () { moveRule(rule.id, 1); });
-
-        var archive = document.createElement('button');
-        archive.type = 'button';
-        archive.className = 'btn';
-        archive.textContent = '보관';
-        archive.addEventListener('click', function () { archiveRule(rule.id); });
-
-        li.appendChild(dot);
-        li.appendChild(input);
-        li.appendChild(up);
-        li.appendChild(down);
-        li.appendChild(archive);
-        el.manageList.appendChild(li);
+      var dots = document.createElement('span');
+      dots.className = 'dots';
+      rules.forEach(function (rule) {
+        var checked = isChecked(entries, key, rule.id);
+        if (checked) checkedCount += 1;
+        var dot = document.createElement('i');
+        if (checked) dot.style.background = rule.color;
+        dots.appendChild(dot);
       });
+      if (rules.length > 0 && checkedCount === rules.length) cell.classList.add('all-done');
 
-      var archived = state.rules.filter(function (rule) { return rule.archived; });
-      el.archiveSection.hidden = archived.length === 0;
-      el.archiveList.textContent = '';
-      archived.forEach(function (rule) {
-        var li = document.createElement('li');
-        var label = document.createElement('span');
-        label.className = 'archived-row';
-        label.textContent = rule.name;
+      var num = document.createElement('span');
+      num.className = 'num';
+      num.textContent = String(date.getDate());
+      cell.setAttribute('aria-label', date.getMonth() + 1 + '월 ' + date.getDate() + '일, ' + checkedCount + '/' + rules.length + ' 지킴');
+      if (key === selectedKey) cell.setAttribute('aria-current', 'date');
 
-        var restore = document.createElement('button');
-        restore.type = 'button';
-        restore.className = 'btn';
-        restore.textContent = '복원';
-        restore.addEventListener('click', function () { restoreRule(rule.id); });
-
-        li.appendChild(label);
-        li.appendChild(restore);
-        el.archiveList.appendChild(li);
-      });
-    }
-
-    function moveRule(ruleId, delta) {
-      var from = state.rules.indexOf(ruleById(ruleId));
-      if (from < 0) return;
-      var target = from + delta;
-      while (target >= 0 && target < state.rules.length && state.rules[target].archived) target += delta;
-      if (target < 0 || target >= state.rules.length || state.rules[target].archived) return;
-      var moved = state.rules.splice(from, 1)[0];
-      state.rules.splice(target, 0, moved);
-      if (save()) {
-        rebuildManage();
-        renderAll();
-      }
-    }
-
-    function archiveRule(ruleId) {
-      var rule = ruleById(ruleId);
-      if (!rule) return;
-      rule.archived = true;
-      if (save()) {
-        rebuildManage();
-        renderAll();
-      }
-    }
-
-    function restoreRule(ruleId) {
-      var rule = ruleById(ruleId);
-      if (!rule) return;
-      rule.archived = false;
-      if (save()) {
-        rebuildManage();
-        renderAll();
-      }
-    }
-
-    function addRule() {
-      var name = el.newRuleName.value.trim();
-      if (!name) { el.newRuleName.focus(); return; }
-      state.rules.push({
-        id: 'rule-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
-        name: name,
-        color: nextColor(),
-        archived: false
-      });
-      el.newRuleName.value = '';
-      if (save()) {
-        rebuildManage();
-        renderAll();
-      }
-    }
-
-    function exportJson() {
-      var payload = JSON.stringify(state, null, 2);
-      var blob = new Blob([payload], { type: 'application/json' });
-      var url = URL.createObjectURL(blob);
-      var link = document.createElement('a');
-      link.href = url;
-      link.download = 'life-rule-' + todayKey + '.json';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-      toast('내보냈습니다.');
-    }
-
-    function importJson(file) {
-      var reader = new FileReader();
-      reader.onload = function () {
-        var parsed;
-        try { parsed = JSON.parse(String(reader.result)); } catch (err) { toast('JSON을 읽을 수 없습니다.'); return; }
-        var next = normalizeState(parsed);
-        if (!next.rules.length) { toast('규칙이 없는 파일입니다.'); return; }
-        state = next;
-        if (save()) {
-          selectedKey = todayKey;
-          view = { year: today.getFullYear(), month: today.getMonth() };
-          rebuildManage();
-          renderAll();
-          toast('가져왔습니다.');
-        }
-      };
-      reader.onerror = function () { toast('파일을 읽지 못했습니다.'); };
-      reader.readAsText(file);
-    }
-
-    /* ---------- wiring ---------- */
-
-    el.ruleList.addEventListener('click', function (event) {
-      var button = event.target.closest('.rule-btn');
-      if (button) toggleRule(button.dataset.ruleId);
+      cell.appendChild(num);
+      cell.appendChild(dots);
+      el.calGrid.appendChild(cell);
     });
+  }
 
-    el.calGrid.addEventListener('click', function (event) {
-      var cell = event.target.closest('.cell');
-      if (!cell || cell.disabled || !cell.dataset.date) return;
-      selectDate(cell.dataset.date);
+  function renderLegend() {
+    el.legend.textContent = '';
+    activeRules().forEach(function (rule) {
+      var li = document.createElement('li');
+      var dot = document.createElement('i');
+      dot.style.background = rule.color;
+      var text = document.createElement('span');
+      text.textContent = rule.name;
+      li.appendChild(dot);
+      li.appendChild(text);
+      el.legend.appendChild(li);
     });
+  }
 
-    el.prevMonth.addEventListener('click', function () {
-      view = view.month === 0 ? { year: view.year - 1, month: 11 } : { year: view.year, month: view.month - 1 };
-      renderCalendar();
-    });
+  function renderAll() {
+    el.manageBtn.disabled = !state;
+    renderDayCard();
+    renderCalendar();
+    renderLegend();
+  }
 
-    el.nextMonth.addEventListener('click', function () {
-      view = view.month === 11 ? { year: view.year + 1, month: 0 } : { year: view.year, month: view.month + 1 };
-      renderCalendar();
-    });
+  /* ---------- actions ---------- */
 
-    el.todayBtn.addEventListener('click', function () { selectDate(todayKey); });
-    el.manageBtn.addEventListener('click', openManage);
-    el.addRuleBtn.addEventListener('click', addRule);
-    el.newRuleName.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') { event.preventDefault(); addRule(); }
-    });
-    el.exportBtn.addEventListener('click', exportJson);
-    el.importBtn.addEventListener('click', function () { el.importFile.click(); });
-    el.importFile.addEventListener('change', function () {
-      var file = el.importFile.files && el.importFile.files[0];
-      if (file) importJson(file);
-      el.importFile.value = '';
-    });
-
+  function selectDate(key) {
+    if (key > todayKey) return;
+    selectedKey = key;
+    var date = parseKey(key);
+    view = { year: date.getFullYear(), month: date.getMonth() };
     renderAll();
   }
 
-  init();
+  async function toggleRule(ruleId) {
+    if (!state || selectedKey > todayKey) return;
+    var nextValue = !isChecked(state.entries, selectedKey, ruleId);
+    await mutate({ action: 'check', date: selectedKey, ruleId: ruleId, value: nextValue }, '체크를 저장하지 못했습니다.');
+  }
+
+  async function saveRules(rules, message) {
+    return mutate({ action: 'rules', rules: rules }, message || '규칙을 저장하지 못했습니다.');
+  }
+
+  function nextColor() {
+    var total = state ? state.rules.length : 0;
+    var palette = ['#4f46e5', '#f59e0b', '#0d9488', '#e11d48', '#7c3aed', '#0284c7'];
+    return palette[total % palette.length];
+  }
+
+  function openManage() {
+    if (!state) return;
+    rebuildManage();
+    if (typeof el.dialog.showModal === 'function') el.dialog.showModal();
+    else el.dialog.setAttribute('open', '');
+  }
+
+  function rebuildManage() {
+    el.manageList.textContent = '';
+    activeRules().forEach(function (rule) {
+      var li = document.createElement('li');
+
+      var dot = document.createElement('span');
+      dot.className = 'rdot';
+      dot.style.borderColor = rule.color;
+      dot.style.background = rule.color;
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.maxLength = 40;
+      input.value = rule.name;
+      input.setAttribute('aria-label', '규칙 이름');
+      input.addEventListener('change', function () {
+        var name = input.value.trim();
+        if (!name) { input.value = rule.name; return; }
+        var rules = state.rules.map(function (r) { return r.id === rule.id ? Object.assign({}, r, { name: name }) : r; });
+        saveRules(rules, '이름을 저장하지 못했습니다.').then(function (ok) {
+          if (!ok) input.value = rule.name;
+          else rebuildManage();
+        });
+      });
+
+      var up = document.createElement('button');
+      up.type = 'button';
+      up.className = 'icon';
+      up.textContent = '↑';
+      up.setAttribute('aria-label', rule.name + ' 위로 이동');
+      up.addEventListener('click', function () { moveRule(rule.id, -1); });
+
+      var down = document.createElement('button');
+      down.type = 'button';
+      down.className = 'icon';
+      down.textContent = '↓';
+      down.setAttribute('aria-label', rule.name + ' 아래로 이동');
+      down.addEventListener('click', function () { moveRule(rule.id, 1); });
+
+      var archive = document.createElement('button');
+      archive.type = 'button';
+      archive.className = 'btn';
+      archive.textContent = '보관';
+      archive.addEventListener('click', function () { archiveRule(rule.id); });
+
+      li.appendChild(dot);
+      li.appendChild(input);
+      li.appendChild(up);
+      li.appendChild(down);
+      li.appendChild(archive);
+      el.manageList.appendChild(li);
+    });
+
+    var archived = state.rules.filter(function (rule) { return rule.archived; });
+    el.archiveSection.hidden = archived.length === 0;
+    el.archiveList.textContent = '';
+    archived.forEach(function (rule) {
+      var li = document.createElement('li');
+      var label = document.createElement('span');
+      label.className = 'archived-row';
+      label.textContent = rule.name;
+
+      var restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'btn';
+      restore.textContent = '복원';
+      restore.addEventListener('click', function () {
+        var rules = state.rules.map(function (r) { return r.id === rule.id ? Object.assign({}, r, { archived: false }) : r; });
+        saveRules(rules).then(rebuildManage);
+      });
+
+      li.appendChild(label);
+      li.appendChild(restore);
+      el.archiveList.appendChild(li);
+    });
+  }
+
+  function moveRule(ruleId, delta) {
+    var index = -1;
+    state.rules.forEach(function (rule, i) { if (rule.id === ruleId) index = i; });
+    if (index < 0) return;
+    var target = index + delta;
+    while (target >= 0 && target < state.rules.length && state.rules[target].archived) target += delta;
+    if (target < 0 || target >= state.rules.length || state.rules[target].archived) return;
+    var rules = state.rules.slice();
+    var moved = rules.splice(index, 1)[0];
+    rules.splice(target, 0, moved);
+    saveRules(rules).then(rebuildManage);
+  }
+
+  function archiveRule(ruleId) {
+    var rules = state.rules.map(function (r) { return r.id === ruleId ? Object.assign({}, r, { archived: true }) : r; });
+    saveRules(rules).then(rebuildManage);
+  }
+
+  function addRule() {
+    var name = el.newRuleName.value.trim();
+    if (!name) { el.newRuleName.focus(); return; }
+    var rules = state.rules.concat([{
+      id: 'rule-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+      name: name,
+      color: nextColor(),
+      archived: false
+    }]);
+    saveRules(rules, '규칙을 추가하지 못했습니다.').then(function (ok) {
+      if (ok) { el.newRuleName.value = ''; rebuildManage(); }
+    });
+  }
+
+  function exportJson() {
+    if (!state) return;
+    var blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'life-rule-' + todayKey + '.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    toast('내보냈습니다.');
+  }
+
+  function importJson(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try { parsed = JSON.parse(String(reader.result)); } catch (err) { toast('JSON을 읽을 수 없습니다.'); return; }
+      mutate({ action: 'import', state: parsed }, '가져오지 못했습니다.').then(function (ok) {
+        if (ok) { rebuildManage(); toast('가져왔습니다.'); }
+      });
+    };
+    reader.onerror = function () { toast('파일을 읽지 못했습니다.'); };
+    reader.readAsText(file);
+  }
+
+  /* ---------- wiring ---------- */
+
+  el.ruleList.addEventListener('click', function (event) {
+    var button = event.target.closest('.rule-btn');
+    if (button) toggleRule(button.dataset.ruleId);
+  });
+
+  el.calGrid.addEventListener('click', function (event) {
+    var cell = event.target.closest('.cell');
+    if (!cell || cell.disabled || !cell.dataset.date) return;
+    selectDate(cell.dataset.date);
+  });
+
+  el.prevMonth.addEventListener('click', function () {
+    view = view.month === 0 ? { year: view.year - 1, month: 11 } : { year: view.year, month: view.month - 1 };
+    renderCalendar();
+  });
+
+  el.nextMonth.addEventListener('click', function () {
+    view = view.month === 11 ? { year: view.year + 1, month: 0 } : { year: view.year, month: view.month + 1 };
+    renderCalendar();
+  });
+
+  el.todayBtn.addEventListener('click', function () { selectDate(todayKey); });
+  el.manageBtn.addEventListener('click', openManage);
+  el.addRuleBtn.addEventListener('click', addRule);
+  el.newRuleName.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') { event.preventDefault(); addRule(); }
+  });
+  el.exportBtn.addEventListener('click', exportJson);
+  el.importBtn.addEventListener('click', function () { el.importFile.click(); });
+  el.importFile.addEventListener('change', function () {
+    var file = el.importFile.files && el.importFile.files[0];
+    if (file) importJson(file);
+    el.importFile.value = '';
+  });
+
+  el.retryBtn.addEventListener('click', function () { load(); });
+  el.authSubmit.addEventListener('click', submitPassword);
+  el.authCancel.addEventListener('click', function () { closeAuth(false); });
+  el.authInput.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') { event.preventDefault(); submitPassword(); }
+  });
+  el.authDialog.addEventListener('cancel', function (event) {
+    event.preventDefault();
+    closeAuth(false);
+  });
+  el.authDialog.addEventListener('close', function () { closeAuth(false); });
+
+  /* ---------- boot ---------- */
+
+  async function load() {
+    el.loadError.hidden = true;
+    try {
+      await fetchState();
+      renderAll();
+    } catch (err) {
+      state = null;
+      renderAll();
+      el.loadError.hidden = false;
+      el.dayLabel.textContent = '기록을 불러오지 못했습니다';
+    }
+  }
+
+  function poll() {
+    if (document.visibilityState !== 'visible') return;
+    if (busy || !state || el.dialog.open || el.authDialog.open) return;
+    fetchState().then(renderAll).catch(function () { /* next poll retries */ });
+  }
+
+  window.setInterval(poll, POLL_MS);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') poll();
+  });
+
+  load();
 })();
 </script>
 </body>
