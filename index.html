@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>life-rule</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --ink: #14161a;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --soft: #f3f4f6;
+    --done: #e9f6ee;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+      "Malgun Gothic", "Noto Sans KR", sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 620px; margin: 0 auto; padding: 28px 16px 72px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .topbar h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 14px;
+  }
+  .eyebrow { margin: 0 0 2px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
+  .daydate { margin: 0; font-size: 15px; font-weight: 600; }
+  .daycard-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+  ul.rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .rule-btn {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    padding: 11px 8px; border: 0; border-radius: 10px; background: transparent;
+    font: inherit; color: inherit; text-align: left; cursor: pointer;
+  }
+  .rule-btn:hover { background: var(--soft); }
+  .rule-btn:focus-visible { outline: 2px solid #9ca3af; outline-offset: 1px; }
+  .rule-btn { --rc: #111827; }
+  .rdot { width: 10px; height: 10px; border-radius: 50%; flex: none; border: 2px solid var(--rc); background: transparent; }
+  .rule-btn[aria-pressed="true"] .rdot { background: var(--rc); }
+  .rname { flex: 1; }
+  .rstk { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .rcheck {
+    width: 22px; height: 22px; border-radius: 50%; flex: none;
+    border: 1.5px solid #d1d5db; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: transparent;
+  }
+  .rule-btn[aria-pressed="true"] .rcheck { background: var(--rc); border-color: var(--rc); color: #fff; }
+  .empty { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+
+  .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .cal-title { margin: 0; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+  .weekdays span { text-align: center; font-size: 11px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+  .cell {
+    position: relative; aspect-ratio: 1 / 1; min-height: 40px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+    border: 0; border-radius: 10px; background: transparent; font: inherit; color: inherit;
+    cursor: pointer; padding: 0;
+  }
+  .cell:hover { background: var(--soft); }
+  .cell:disabled { cursor: default; opacity: 0.3; }
+  .cell:disabled:hover { background: transparent; }
+  .cell.all-done { background: var(--done); }
+  .cell.selected { box-shadow: inset 0 0 0 2px var(--ink); }
+  .cell.today .num { font-weight: 700; }
+  .cell .num { font-size: 12px; font-variant-numeric: tabular-nums; }
+  .dots { display: flex; gap: 3px; height: 6px; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
+  .legend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; padding: 0; }
+  .legend li { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+  .legend i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+  .btn {
+    font: inherit; font-size: 13px; padding: 7px 11px; border-radius: 9px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer;
+  }
+  .btn:hover { background: var(--soft); }
+  .ghost { border: 0; background: var(--soft); }
+  .icon {
+    font: inherit; font-size: 15px; width: 30px; height: 30px; border-radius: 9px;
+    border: 0; background: transparent; color: var(--ink); cursor: pointer; line-height: 1;
+  }
+  .icon:hover { background: var(--soft); }
+
+  dialog {
+    border: 0; border-radius: 16px; padding: 0; width: min(520px, calc(100vw - 32px));
+    color: var(--ink); background: var(--card);
+  }
+  dialog::backdrop { background: rgba(17, 24, 39, 0.35); }
+  .dlg-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid var(--line); margin: 0;
+  }
+  .dlg-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
+  .dlg-body { padding: 16px; display: flex; flex-direction: column; gap: 18px; max-height: 70vh; overflow: auto; }
+  .section-label { margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
+  .manage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .manage-list li { display: flex; align-items: center; gap: 6px; }
+  .manage-list input {
+    flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 7px 9px;
+    border: 1px solid var(--line); border-radius: 9px; background: #fff; color: inherit;
+  }
+  .add-row { display: flex; gap: 6px; }
+  .add-row input {
+    flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 7px 9px;
+    border: 1px solid var(--line); border-radius: 9px; background: #fff; color: inherit;
+  }
+  .backup { display: flex; flex-wrap: wrap; gap: 6px; }
+  .note { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
+  .archived-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13.5px; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 8px);
+    background: #111827; color: #fff; font-size: 12.5px; padding: 9px 14px; border-radius: 999px;
+    opacity: 0; pointer-events: none; transition: opacity 0.18s ease, transform 0.18s ease; max-width: 90vw;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <h1>life-rule</h1>
+    <button class="btn ghost" id="manageBtn" type="button">규칙 관리</button>
+  </header>
+
+  <section class="card" aria-labelledby="dayLabel">
+    <div class="daycard-head">
+      <div>
+        <p class="eyebrow" id="dayEyebrow">오늘</p>
+        <p class="daydate" id="dayLabel">—</p>
+      </div>
+      <button class="btn ghost" id="todayBtn" type="button" hidden>오늘로</button>
+    </div>
+    <ul class="rules" id="ruleList"></ul>
+    <p class="empty" id="ruleEmpty" hidden>규칙이 없습니다. 오른쪽 위 "규칙 관리"에서 추가해 주세요.</p>
+  </section>
+
+  <section class="card" aria-labelledby="calTitle">
+    <div class="cal-head">
+      <button class="icon" id="prevMonth" type="button" aria-label="이전 달">‹</button>
+      <p class="cal-title" id="calTitle">—</p>
+      <button class="icon" id="nextMonth" type="button" aria-label="다음 달">›</button>
+    </div>
+    <div class="weekdays" aria-hidden="true">
+      <span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span>
+    </div>
+    <div class="grid" id="calGrid"></div>
+    <ul class="legend" id="legend"></ul>
+  </section>
+</main>
+
+<dialog id="manageDialog">
+  <form method="dialog" class="dlg-head">
+    <h2>규칙 관리</h2>
+    <button class="icon" value="close" aria-label="닫기">✕</button>
+  </form>
+  <div class="dlg-body">
+    <section>
+      <p class="section-label">규칙</p>
+      <ul class="manage-list" id="manageList"></ul>
+    </section>
+    <section>
+      <div class="add-row">
+        <input id="newRuleName" type="text" maxlength="40" placeholder="새 규칙을 입력해 주세요 (예: 하루 물 2L)" aria-label="새 규칙 이름">
+        <button class="btn" id="addRuleBtn" type="button">추가</button>
+      </div>
+    </section>
+    <section id="archiveSection" hidden>
+      <p class="section-label">보관함</p>
+      <ul class="manage-list" id="archiveList"></ul>
+    </section>
+    <section>
+      <p class="section-label">백업</p>
+      <div class="backup">
+        <button class="btn" id="exportBtn" type="button">JSON 내보내기</button>
+        <button class="btn" id="importBtn" type="button">JSON 가져오기</button>
+        <input id="importFile" type="file" accept="application/json,.json" hidden>
+      </div>
+      <p class="note">기록은 이 브라우저에만 저장됩니다. 브라우저 데이터를 지우면 함께 사라지므로, 가끔 내보내기로 백업해 두세요.</p>
+    </section>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var STORAGE_KEY = 'life-rule:v1';
+  var WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+  var PALETTE = ['#4f46e5', '#f59e0b', '#0d9488', '#e11d48', '#7c3aed', '#0284c7'];
+  var MAX_STREAK_DAYS = 3660;
+  var DEFAULT_RULES = [
+    { id: 'rule-sleep', name: '저녁 10시 30분 취침', color: '#4f46e5' },
+    { id: 'rule-wake', name: '아침 6시 기상', color: '#f59e0b' },
+    { id: 'rule-leave', name: '7시 전 집 나서기', color: '#0d9488' }
+  ];
+
+  /* ---------- pure helpers ---------- */
+
+  function pad2(n) { return String(n).length < 2 ? '0' + n : String(n); }
+
+  function dateKey(date) {
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate());
+  }
+
+  function parseKey(key) {
+    var parts = String(key).split('-');
+    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  }
+
+  function addDays(date, delta) {
+    var next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    next.setDate(next.getDate() + delta);
+    return next;
+  }
+
+  function todayDate() {
+    var now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+
+  function isChecked(entries, key, ruleId) {
+    var day = entries[key];
+    return !!(day && day[ruleId] === true);
+  }
+
+  // A checked day extends the streak backwards; an unchecked day ends it.
+  // "Today" being unchecked does not erase yesterday's streak (the day is not over yet).
+  function computeStreak(entries, ruleId, day) {
+    var cursor = isChecked(entries, dateKey(day), ruleId) ? day : addDays(day, -1);
+    var streak = 0;
+    while (streak < MAX_STREAK_DAYS && isChecked(entries, dateKey(cursor), ruleId)) {
+      streak += 1;
+      cursor = addDays(cursor, -1);
+    }
+    return streak;
+  }
+
+  function monthMatrix(year, monthIndex) {
+    var cells = [];
+    var startPad = new Date(year, monthIndex, 1).getDay();
+    var daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    for (var i = 0; i < startPad; i += 1) cells.push(null);
+    for (var d = 1; d <= daysInMonth; d += 1) cells.push(new Date(year, monthIndex, d));
+    while (cells.length % 7 !== 0) cells.push(null);
+    return cells;
+  }
+
+  function normalizeState(raw) {
+    var out = { version: 1, rules: [], entries: {} };
+    if (!raw || typeof raw !== 'object') return out;
+    var rules = Array.isArray(raw.rules) ? raw.rules : [];
+    var seen = {};
+    rules.forEach(function (rule, index) {
+      if (!rule || typeof rule !== 'object') return;
+      if (typeof rule.name !== 'string' || !rule.name.trim()) return;
+      var id = typeof rule.id === 'string' && rule.id ? rule.id : 'rule-' + index + '-' + Math.random().toString(36).slice(2, 8);
+      if (seen[id]) return;
+      seen[id] = true;
+      out.rules.push({
+        id: id,
+        name: rule.name.trim(),
+        color: typeof rule.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(rule.color) ? rule.color : PALETTE[out.rules.length % PALETTE.length],
+        archived: rule.archived === true
+      });
+    });
+    var entries = raw.entries && typeof raw.entries === 'object' ? raw.entries : {};
+    Object.keys(entries).forEach(function (key) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+      var day = entries[key];
+      if (!day || typeof day !== 'object') return;
+      var clean = {};
+      Object.keys(day).forEach(function (ruleId) { if (day[ruleId] === true) clean[ruleId] = true; });
+      if (Object.keys(clean).length) out.entries[key] = clean;
+    });
+    return out;
+  }
+
+  function seedState() {
+    return normalizeState({
+      rules: DEFAULT_RULES.map(function (rule) { return { id: rule.id, name: rule.name, color: rule.color }; }),
+      entries: {}
+    });
+  }
+
+  var api = {
+    dateKey: dateKey,
+    parseKey: parseKey,
+    addDays: addDays,
+    isChecked: isChecked,
+    computeStreak: computeStreak,
+    monthMatrix: monthMatrix,
+    normalizeState: normalizeState,
+    seedState: seedState
+  };
+
+  if (typeof document === 'undefined') {
+    if (typeof module !== 'undefined' && module.exports) module.exports = api;
+    return;
+  }
+
+  /* ---------- state ---------- */
+
+  function loadState() {
+    var raw = null;
+    try { raw = window.localStorage.getItem(STORAGE_KEY); } catch (err) { raw = null; }
+    if (!raw) return seedState();
+    try { return normalizeState(JSON.parse(raw)); } catch (err) { return seedState(); }
+  }
+
+  function init() {
+    var state = loadState();
+    var today = todayDate();
+    var todayKey = dateKey(today);
+    var selectedKey = todayKey;
+    var view = { year: today.getFullYear(), month: today.getMonth() };
+
+    var el = {
+      ruleList: document.getElementById('ruleList'),
+      ruleEmpty: document.getElementById('ruleEmpty'),
+      dayEyebrow: document.getElementById('dayEyebrow'),
+      dayLabel: document.getElementById('dayLabel'),
+      todayBtn: document.getElementById('todayBtn'),
+      calTitle: document.getElementById('calTitle'),
+      calGrid: document.getElementById('calGrid'),
+      legend: document.getElementById('legend'),
+      prevMonth: document.getElementById('prevMonth'),
+      nextMonth: document.getElementById('nextMonth'),
+      manageBtn: document.getElementById('manageBtn'),
+      dialog: document.getElementById('manageDialog'),
+      manageList: document.getElementById('manageList'),
+      archiveSection: document.getElementById('archiveSection'),
+      archiveList: document.getElementById('archiveList'),
+      newRuleName: document.getElementById('newRuleName'),
+      addRuleBtn: document.getElementById('addRuleBtn'),
+      exportBtn: document.getElementById('exportBtn'),
+      importBtn: document.getElementById('importBtn'),
+      importFile: document.getElementById('importFile'),
+      toast: document.getElementById('toast')
+    };
+
+    var toastTimer = null;
+    function toast(message) {
+      el.toast.textContent = message;
+      el.toast.classList.add('show');
+      window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(function () { el.toast.classList.remove('show'); }, 2200);
+    }
+
+    function save() {
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        return true;
+      } catch (err) {
+        toast('저장하지 못했습니다. 브라우저 저장 공간을 확인해 주세요.');
+        return false;
+      }
+    }
+
+    function activeRules() {
+      return state.rules.filter(function (rule) { return !rule.archived; });
+    }
+
+    function ruleById(id) {
+      for (var i = 0; i < state.rules.length; i += 1) if (state.rules[i].id === id) return state.rules[i];
+      return null;
+    }
+
+    function isToday() { return selectedKey === todayKey; }
+
+    /* ---------- rendering ---------- */
+
+    function renderDayCard() {
+      var date = parseKey(selectedKey);
+      el.dayEyebrow.textContent = isToday() ? '오늘' : '지난 기록';
+      el.dayLabel.textContent = date.getFullYear() + '년 ' + (date.getMonth() + 1) + '월 ' +
+        date.getDate() + '일 ' + WEEKDAYS[date.getDay()] + '요일';
+      el.todayBtn.hidden = isToday();
+
+      var rules = activeRules();
+      el.ruleList.textContent = '';
+      el.ruleEmpty.hidden = rules.length > 0;
+
+      rules.forEach(function (rule) {
+        var checked = isChecked(state.entries, selectedKey, rule.id);
+        var streak = computeStreak(state.entries, rule.id, date);
+
+        var li = document.createElement('li');
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'rule-btn';
+        button.style.setProperty('--rc', rule.color);
+        button.setAttribute('aria-pressed', checked ? 'true' : 'false');
+        button.setAttribute('aria-label', rule.name + ' — ' + (checked ? '지킴' : '안 지킴'));
+        button.dataset.ruleId = rule.id;
+
+        var dot = document.createElement('span');
+        dot.className = 'rdot';
+
+        var name = document.createElement('span');
+        name.className = 'rname';
+        name.textContent = rule.name;
+
+        var streakEl = document.createElement('span');
+        streakEl.className = 'rstk';
+        streakEl.textContent = streak > 0 ? '연속 ' + streak + '일' : '아직 없음';
+
+        var check = document.createElement('span');
+        check.className = 'rcheck';
+        check.textContent = '✓';
+
+        button.appendChild(dot);
+        button.appendChild(name);
+        button.appendChild(streakEl);
+        button.appendChild(check);
+        li.appendChild(button);
+        el.ruleList.appendChild(li);
+      });
+    }
+
+    function renderCalendar() {
+      el.calTitle.textContent = view.year + '년 ' + (view.month + 1) + '월';
+      var rules = activeRules();
+      el.calGrid.textContent = '';
+
+      monthMatrix(view.year, view.month).forEach(function (date) {
+        if (!date) {
+          var blank = document.createElement('div');
+          blank.className = 'cell';
+          blank.setAttribute('aria-hidden', 'true');
+          el.calGrid.appendChild(blank);
+          return;
+        }
+
+        var key = dateKey(date);
+        var isFuture = key > todayKey;
+        var checkedCount = 0;
+
+        var cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'cell';
+        cell.dataset.date = key;
+        cell.disabled = isFuture;
+        if (key === selectedKey) cell.classList.add('selected');
+        if (key === todayKey) cell.classList.add('today');
+
+        var dots = document.createElement('span');
+        dots.className = 'dots';
+        rules.forEach(function (rule) {
+          var checked = isChecked(state.entries, key, rule.id);
+          if (checked) checkedCount += 1;
+          var dot = document.createElement('i');
+          if (checked) dot.style.background = rule.color;
+          dots.appendChild(dot);
+        });
+        if (rules.length > 0 && checkedCount === rules.length) cell.classList.add('all-done');
+
+        var num = document.createElement('span');
+        num.className = 'num';
+        num.textContent = String(date.getDate());
+
+        var label = date.getMonth() + 1 + '월 ' + date.getDate() + '일, ' + checkedCount + '/' + rules.length + ' 지킴';
+        cell.setAttribute('aria-label', label);
+        if (key === selectedKey) cell.setAttribute('aria-current', 'date');
+
+        cell.appendChild(num);
+        cell.appendChild(dots);
+        el.calGrid.appendChild(cell);
+      });
+    }
+
+    function renderLegend() {
+      el.legend.textContent = '';
+      activeRules().forEach(function (rule) {
+        var li = document.createElement('li');
+        var dot = document.createElement('i');
+        dot.style.background = rule.color;
+        var text = document.createElement('span');
+        text.textContent = rule.name;
+        li.appendChild(dot);
+        li.appendChild(text);
+        el.legend.appendChild(li);
+      });
+    }
+
+    function renderAll() {
+      renderDayCard();
+      renderCalendar();
+      renderLegend();
+    }
+
+    /* ---------- actions ---------- */
+
+    function selectDate(key) {
+      if (key > todayKey) return;
+      selectedKey = key;
+      var date = parseKey(key);
+      view = { year: date.getFullYear(), month: date.getMonth() };
+      renderAll();
+    }
+
+    function toggleRule(ruleId) {
+      if (selectedKey > todayKey) return;
+      var day = state.entries[selectedKey] || {};
+      if (day[ruleId]) delete day[ruleId];
+      else day[ruleId] = true;
+
+      if (Object.keys(day).length) state.entries[selectedKey] = day;
+      else delete state.entries[selectedKey];
+
+      if (save()) {
+        renderDayCard();
+        renderCalendar();
+      }
+    }
+
+    function nextColor() {
+      var used = activeRules().length + state.rules.filter(function (r) { return r.archived; }).length;
+      return PALETTE[used % PALETTE.length];
+    }
+
+    function openManage() {
+      rebuildManage();
+      if (typeof el.dialog.showModal === 'function') el.dialog.showModal();
+      else el.dialog.setAttribute('open', '');
+    }
+
+    function rebuildManage() {
+      el.manageList.textContent = '';
+      activeRules().forEach(function (rule) {
+        var li = document.createElement('li');
+
+        var dot = document.createElement('span');
+        dot.className = 'rdot';
+        dot.style.borderColor = rule.color;
+        dot.style.background = rule.color;
+
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.maxLength = 40;
+        input.value = rule.name;
+        input.setAttribute('aria-label', '규칙 이름');
+        input.addEventListener('change', function () {
+          var name = input.value.trim();
+          if (!name) { input.value = rule.name; return; }
+          rule.name = name;
+          if (save()) renderAll();
+        });
+
+        var up = document.createElement('button');
+        up.type = 'button';
+        up.className = 'icon';
+        up.textContent = '↑';
+        up.setAttribute('aria-label', rule.name + ' 위로 이동');
+        up.addEventListener('click', function () { moveRule(rule.id, -1); });
+
+        var down = document.createElement('button');
+        down.type = 'button';
+        down.className = 'icon';
+        down.textContent = '↓';
+        down.setAttribute('aria-label', rule.name + ' 아래로 이동');
+        down.addEventListener('click', function () { moveRule(rule.id, 1); });
+
+        var archive = document.createElement('button');
+        archive.type = 'button';
+        archive.className = 'btn';
+        archive.textContent = '보관';
+        archive.addEventListener('click', function () { archiveRule(rule.id); });
+
+        li.appendChild(dot);
+        li.appendChild(input);
+        li.appendChild(up);
+        li.appendChild(down);
+        li.appendChild(archive);
+        el.manageList.appendChild(li);
+      });
+
+      var archived = state.rules.filter(function (rule) { return rule.archived; });
+      el.archiveSection.hidden = archived.length === 0;
+      el.archiveList.textContent = '';
+      archived.forEach(function (rule) {
+        var li = document.createElement('li');
+        var label = document.createElement('span');
+        label.className = 'archived-row';
+        label.textContent = rule.name;
+
+        var restore = document.createElement('button');
+        restore.type = 'button';
+        restore.className = 'btn';
+        restore.textContent = '복원';
+        restore.addEventListener('click', function () { restoreRule(rule.id); });
+
+        li.appendChild(label);
+        li.appendChild(restore);
+        el.archiveList.appendChild(li);
+      });
+    }
+
+    function moveRule(ruleId, delta) {
+      var from = state.rules.indexOf(ruleById(ruleId));
+      if (from < 0) return;
+      var target = from + delta;
+      while (target >= 0 && target < state.rules.length && state.rules[target].archived) target += delta;
+      if (target < 0 || target >= state.rules.length || state.rules[target].archived) return;
+      var moved = state.rules.splice(from, 1)[0];
+      state.rules.splice(target, 0, moved);
+      if (save()) {
+        rebuildManage();
+        renderAll();
+      }
+    }
+
+    function archiveRule(ruleId) {
+      var rule = ruleById(ruleId);
+      if (!rule) return;
+      rule.archived = true;
+      if (save()) {
+        rebuildManage();
+        renderAll();
+      }
+    }
+
+    function restoreRule(ruleId) {
+      var rule = ruleById(ruleId);
+      if (!rule) return;
+      rule.archived = false;
+      if (save()) {
+        rebuildManage();
+        renderAll();
+      }
+    }
+
+    function addRule() {
+      var name = el.newRuleName.value.trim();
+      if (!name) { el.newRuleName.focus(); return; }
+      state.rules.push({
+        id: 'rule-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+        name: name,
+        color: nextColor(),
+        archived: false
+      });
+      el.newRuleName.value = '';
+      if (save()) {
+        rebuildManage();
+        renderAll();
+      }
+    }
+
+    function exportJson() {
+      var payload = JSON.stringify(state, null, 2);
+      var blob = new Blob([payload], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = 'life-rule-' + todayKey + '.json';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      toast('내보냈습니다.');
+    }
+
+    function importJson(file) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var parsed;
+        try { parsed = JSON.parse(String(reader.result)); } catch (err) { toast('JSON을 읽을 수 없습니다.'); return; }
+        var next = normalizeState(parsed);
+        if (!next.rules.length) { toast('규칙이 없는 파일입니다.'); return; }
+        state = next;
+        if (save()) {
+          selectedKey = todayKey;
+          view = { year: today.getFullYear(), month: today.getMonth() };
+          rebuildManage();
+          renderAll();
+          toast('가져왔습니다.');
+        }
+      };
+      reader.onerror = function () { toast('파일을 읽지 못했습니다.'); };
+      reader.readAsText(file);
+    }
+
+    /* ---------- wiring ---------- */
+
+    el.ruleList.addEventListener('click', function (event) {
+      var button = event.target.closest('.rule-btn');
+      if (button) toggleRule(button.dataset.ruleId);
+    });
+
+    el.calGrid.addEventListener('click', function (event) {
+      var cell = event.target.closest('.cell');
+      if (!cell || cell.disabled || !cell.dataset.date) return;
+      selectDate(cell.dataset.date);
+    });
+
+    el.prevMonth.addEventListener('click', function () {
+      view = view.month === 0 ? { year: view.year - 1, month: 11 } : { year: view.year, month: view.month - 1 };
+      renderCalendar();
+    });
+
+    el.nextMonth.addEventListener('click', function () {
+      view = view.month === 11 ? { year: view.year + 1, month: 0 } : { year: view.year, month: view.month + 1 };
+      renderCalendar();
+    });
+
+    el.todayBtn.addEventListener('click', function () { selectDate(todayKey); });
+    el.manageBtn.addEventListener('click', openManage);
+    el.addRuleBtn.addEventListener('click', addRule);
+    el.newRuleName.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); addRule(); }
+    });
+    el.exportBtn.addEventListener('click', exportJson);
+    el.importBtn.addEventListener('click', function () { el.importFile.click(); });
+    el.importFile.addEventListener('change', function () {
+      var file = el.importFile.files && el.importFile.files[0];
+      if (file) importJson(file);
+      el.importFile.value = '';
+    });
+
+    renderAll();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
