@@ -112,7 +112,7 @@
   .section-label { margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
   .manage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .manage-list li { display: flex; align-items: center; gap: 6px; }
-  .manage-list input, .add-row input, .auth-field input {
+  .manage-list input, .add-row input {
     flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 7px 9px;
     border: 1px solid var(--line); border-radius: 9px; background: #fff; color: inherit;
   }
@@ -120,11 +120,6 @@
   .backup { display: flex; flex-wrap: wrap; gap: 6px; }
   .note { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
   .archived-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13.5px; }
-  .auth-body { padding: 18px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
-  .auth-body p { margin: 0; font-size: 13px; color: var(--muted); }
-  .auth-field input { width: 100%; font-size: 16px; padding: 10px 12px; letter-spacing: 0.1em; }
-  .auth-error { margin: 0; font-size: 12.5px; color: #b91c1c; }
-  .auth-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
   .toast {
     position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 8px);
@@ -198,28 +193,11 @@
         <button class="btn" id="importBtn" type="button">JSON 가져오기</button>
         <input id="importFile" type="file" accept="application/json,.json" hidden>
       </div>
-      <p class="note">기록은 서버에 저장되어 누구나 같은 내용을 봅니다. 규칙을 바꾸려면 비밀번호가 필요합니다.</p>
+      <p class="note">기록은 서버에 저장되어 누구나 같은 내용을 보고 바꿀 수 있습니다.</p>
     </section>
   </div>
 </dialog>
 
-<dialog id="authDialog">
-  <form method="dialog" class="dlg-head">
-    <h2>비밀번호</h2>
-    <button class="icon" value="cancel" aria-label="취소">✕</button>
-  </form>
-  <div class="auth-body">
-    <p id="authTitle">체크하려면 비밀번호가 필요합니다.</p>
-    <div class="auth-field">
-      <input id="authInput" type="password" inputmode="text" autocomplete="current-password" placeholder="비밀번호" aria-label="비밀번호">
-    </div>
-    <p class="auth-error" id="authError" hidden>비밀번호가 맞지 않습니다.</p>
-    <div class="auth-actions">
-      <button class="btn" id="authCancel" type="button">취소</button>
-      <button class="btn" id="authSubmit" type="button">확인</button>
-    </div>
-  </div>
-</dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -227,7 +205,6 @@
 (function () {
   'use strict';
 
-  var TOKEN_KEY = 'life-rule:token';
   var WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
   var MAX_STREAK_DAYS = 3660;
   var POLL_MS = 20000;
@@ -290,12 +267,9 @@
   var todayKey = dateKey(today);
   var selectedKey = todayKey;
   var view = { year: today.getFullYear(), month: today.getMonth() };
-  var token = '';
   var busy = false;
   var writeSeq = 0;
-  var pendingAuth = null;
 
-  try { token = window.sessionStorage.getItem(TOKEN_KEY) || ''; } catch (err) { token = ''; }
 
   var el = {
     ruleList: document.getElementById('ruleList'),
@@ -320,12 +294,6 @@
     exportBtn: document.getElementById('exportBtn'),
     importBtn: document.getElementById('importBtn'),
     importFile: document.getElementById('importFile'),
-    authDialog: document.getElementById('authDialog'),
-    authInput: document.getElementById('authInput'),
-    authTitle: document.getElementById('authTitle'),
-    authError: document.getElementById('authError'),
-    authSubmit: document.getElementById('authSubmit'),
-    authCancel: document.getElementById('authCancel'),
     syncNote: document.getElementById('syncNote'),
     toast: document.getElementById('toast')
   };
@@ -339,14 +307,6 @@
   }
 
   /* ---------- server ---------- */
-
-  function saveToken(value) {
-    token = value;
-    try {
-      if (value) window.sessionStorage.setItem(TOKEN_KEY, value);
-      else window.sessionStorage.removeItem(TOKEN_KEY);
-    } catch (err) { /* session storage unavailable */ }
-  }
 
   function markSynced() {
     var now = new Date();
@@ -365,81 +325,18 @@
   async function postState(payload) {
     var response = await fetch('/api/state', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     var data = await response.json().catch(function () { return null; });
     return { status: response.status, data: data };
   }
 
-  function askPassword(message) {
-    if (pendingAuth) { pendingAuth(false); pendingAuth = null; }
-    el.authTitle.textContent = message || '체크하려면 비밀번호가 필요합니다.';
-    el.authError.hidden = true;
-    el.authInput.value = '';
-    if (typeof el.authDialog.showModal === 'function') el.authDialog.showModal();
-    else el.authDialog.setAttribute('open', '');
-    window.setTimeout(function () { el.authInput.focus(); }, 30);
-    return new Promise(function (resolve) { pendingAuth = resolve; });
-  }
-
-  function closeAuth(result) {
-    if (typeof el.authDialog.close === 'function') el.authDialog.close();
-    else el.authDialog.removeAttribute('open');
-    if (pendingAuth) {
-      var resolve = pendingAuth;
-      pendingAuth = null;
-      resolve(result);
-    }
-  }
-
-  async function submitPassword() {
-    var password = el.authInput.value;
-    if (!password) { el.authError.hidden = true; el.authInput.focus(); return; }
-    el.authSubmit.disabled = true;
-    try {
-      var response = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: password })
-      });
-      var data = await response.json().catch(function () { return null; });
-      if (response.ok && data && data.ok && data.token) {
-        saveToken(data.token);
-        el.authError.hidden = true;
-        closeAuth(true);
-        return;
-      }
-      el.authError.textContent = response.status === 429
-        ? '시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.'
-        : '비밀번호가 맞지 않습니다.';
-      el.authError.hidden = false;
-      el.authInput.select();
-    } catch (err) {
-      el.authError.textContent = '확인하지 못했습니다. 연결을 확인해 주세요.';
-      el.authError.hidden = false;
-    } finally {
-      el.authSubmit.disabled = false;
-    }
-  }
-
-  async function ensureToken() {
-    if (token) return true;
-    return askPassword();
-  }
-
   async function mutate(payload, message) {
     if (busy) return false;
     busy = true;
     try {
-      if (!(await ensureToken())) return false;
       var result = await postState(payload);
-      if (result.status === 401) {
-        saveToken('');
-        if (!(await ensureToken())) return false;
-        result = await postState(payload);
-      }
-      if (result.status === 401) { saveToken(''); toast('비밀번호 확인이 만료되었습니다.'); return false; }
       if (!result.data || !result.data.ok) { toast(message || '저장하지 못했습니다.'); return false; }
       writeSeq += 1;
       state = result.data.state;
@@ -797,16 +694,6 @@
   });
 
   el.retryBtn.addEventListener('click', function () { load(); });
-  el.authSubmit.addEventListener('click', submitPassword);
-  el.authCancel.addEventListener('click', function () { closeAuth(false); });
-  el.authInput.addEventListener('keydown', function (event) {
-    if (event.key === 'Enter') { event.preventDefault(); submitPassword(); }
-  });
-  el.authDialog.addEventListener('cancel', function (event) {
-    event.preventDefault();
-    closeAuth(false);
-  });
-  el.authDialog.addEventListener('close', function () { closeAuth(false); });
 
   /* ---------- boot ---------- */
 
@@ -825,7 +712,7 @@
 
   function poll() {
     if (document.visibilityState !== 'visible') return;
-    if (busy || !state || el.dialog.open || el.authDialog.open) return;
+    if (busy || !state || el.dialog.open) return;
     var seq = writeSeq;
     fetchState()
       .then(function () {

@@ -16,10 +16,6 @@ module.exports = async function handler(req, res) {
     return lib.send(res, 405, { ok: false, error: 'method-not-allowed' });
   }
 
-  if (!lib.tokenValid(lib.bearer(req))) {
-    return lib.send(res, 401, { ok: false, error: 'unauthorized' });
-  }
-
   const body = lib.readBody(req);
   if (!body || typeof body.action !== 'string') {
     return lib.send(res, 400, { ok: false, error: 'bad-request' });

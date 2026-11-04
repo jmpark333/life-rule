@@ -5,9 +5,6 @@ const crypto = require('node:crypto');
 const RULES_KEY = 'life-rule:rules';
 const CHECK_KEY = 'life-rule:check';
 const LEGACY_KEY = 'life-rule:state';
-const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
-const MAX_FAILS = 10;
-const FAIL_WINDOW_SEC = 600;
 const MAX_STREAK_DAYS = 3660;
 const PALETTE = ['#4f46e5', '#f59e0b', '#0d9488', '#e11d48', '#7c3aed', '#0284c7'];
 
@@ -217,84 +214,6 @@ async function replaceAll(state) {
   await pipeline(commands);
 }
 
-/* ---------- auth ---------- */
-
-function sameSecret(input, expected) {
-  const a = crypto.createHash('sha256').update(String(input)).digest();
-  const b = crypto.createHash('sha256').update(String(expected)).digest();
-  return crypto.timingSafeEqual(a, b);
-}
-
-function passwordMatches(candidate) {
-  const expected = process.env.CHECK_PASSWORD;
-  if (!expected || typeof candidate !== 'string' || !candidate) return false;
-  return sameSecret(candidate, expected);
-}
-
-function authSecret() {
-  return process.env.AUTH_SECRET || '';
-}
-
-function sign(value) {
-  return crypto.createHmac('sha256', authSecret()).update(String(value)).digest('base64url');
-}
-
-function issueToken() {
-  const exp = Date.now() + TOKEN_TTL_MS;
-  return exp + '.' + sign(exp);
-}
-
-function tokenValid(token) {
-  if (!authSecret()) return false;
-  const parts = String(token || '').split('.');
-  if (parts.length !== 2) return false;
-  const exp = Number(parts[0]);
-  if (!Number.isFinite(exp) || exp < Date.now()) return false;
-  const expected = sign(exp);
-  const given = parts[1];
-  if (given.length !== expected.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
-}
-
-function bearer(req) {
-  const header = req.headers && (req.headers.authorization || req.headers.Authorization);
-  if (!header || !/^Bearer\s+/i.test(header)) return '';
-  return header.replace(/^Bearer\s+/i, '').trim();
-}
-
-/* ---------- rate limit ---------- */
-
-function clientIp(req) {
-  const forwarded = req.headers && req.headers['x-forwarded-for'];
-  const first = String(forwarded || '').split(',')[0].trim();
-  return first || 'unknown';
-}
-
-async function tooManyFails(ip) {
-  try {
-    const reply = await command('/get/' + encodeURIComponent('life-rule:fail:' + ip));
-    return Number((reply && reply.result) || 0) >= MAX_FAILS;
-  } catch (err) {
-    return false;
-  }
-}
-
-async function recordFail(ip) {
-  try {
-    const key = 'life-rule:fail:' + ip;
-    const reply = await command('/incr/' + encodeURIComponent(key));
-    if (Number(reply && reply.result) === 1) {
-      await command('/expire/' + encodeURIComponent(key) + '/' + FAIL_WINDOW_SEC);
-    }
-  } catch (err) { /* best effort */ }
-}
-
-async function clearFails(ip) {
-  try {
-    await command('/del/' + encodeURIComponent('life-rule:fail:' + ip));
-  } catch (err) { /* best effort */ }
-}
-
 /* ---------- http helpers ---------- */
 
 function send(res, status, payload) {
@@ -323,14 +242,6 @@ module.exports = {
   normalizeRules: normalizeRules,
   computeStreak: computeStreak,
   dateKey: dateKey,
-  passwordMatches: passwordMatches,
-  issueToken: issueToken,
-  tokenValid: tokenValid,
-  bearer: bearer,
-  clientIp: clientIp,
-  tooManyFails: tooManyFails,
-  recordFail: recordFail,
-  clearFails: clearFails,
   send: send,
   readBody: readBody
 };
