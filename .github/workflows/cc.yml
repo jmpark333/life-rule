@@ -1,0 +1,90 @@
+name: cc-agent
+
+# 이슈/코멘트에 /cc 를 남기면 AI 가 코드를 분석해 답변합니다.
+#   /cc              코드 분석 + 답변
+#   /cc fix          분석 + 수정 PR 생성
+#
+# 필요한 Secret: CMD_API_KEY (CommandCode API 키)
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: cc-agent-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    if: >-
+      contains(github.event.comment.body, '/cc') ||
+      contains(github.event.issue.body, '/cc')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 권한 확인
+        id: gate
+        env:
+          ASSOC: ${{ github.event.comment.author_association || github.event.issue.author_association }}
+          ACTOR_TYPE: ${{ github.event.comment.user.type || github.event.issue.user.type }}
+        run: |
+          if [ "$ACTOR_TYPE" = "Bot" ]; then
+            echo "::notice::봇이 작성한 이벤트는 무시합니다."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$ASSOC" in
+            OWNER|MEMBER|COLLABORATOR) echo "run=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::권한 없는 사용자($ASSOC)의 /cc 요청은 실행하지 않습니다."
+              ;;
+          esac
+
+      - name: 체크아웃
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 명령 파싱
+        if: steps.gate.outputs.run == 'true'
+        id: cmd
+        run: |
+          python3 - "$GITHUB_EVENT_PATH" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys
+          event = json.load(open(sys.argv[1]))
+          body = (event.get("comment") or {}).get("body") or ""
+          if not body:
+              body = (event.get("issue") or {}).get("body") or ""
+          text = ""
+          for line in body.splitlines():
+              if line.strip().startswith("/cc"):
+                  text = line.strip()[3:].strip()
+                  break
+          print(f"text={text}")
+          PY
+
+      - name: Python 설정
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 에이전트 실행
+        if: steps.gate.outputs.run == 'true'
+        env:
+          CMD_API_KEY: ${{ secrets.CMD_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMAND_TEXT: ${{ steps.cmd.outputs.text }}
+          EVENT_PATH: ${{ github.event_path }}
+          CMD_MODEL: deepseek/deepseek-v4.1-flash
+        run: python3 .github/scripts/cc_agent.py
