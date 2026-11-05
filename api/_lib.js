@@ -7,6 +7,7 @@ const CHECK_KEY = 'life-rule:check';
 const LEGACY_KEY = 'life-rule:state';
 const MAX_STREAK_DAYS = 3660;
 const PALETTE = ['#4f46e5', '#f59e0b', '#0d9488', '#e11d48', '#7c3aed', '#0284c7'];
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 const DEFAULT_RULES = [
   { id: 'rule-sleep', name: '저녁 10시 30분 취침', color: '#4f46e5', archived: false },
@@ -80,6 +81,10 @@ function computeStreak(entries, ruleId, day) {
   return streak;
 }
 
+function newRuleId(index) {
+  return 'rule-' + index + '-' + crypto.randomBytes(3).toString('hex');
+}
+
 function normalizeRules(raw) {
   const list = Array.isArray(raw) ? raw : [];
   const out = [];
@@ -87,7 +92,8 @@ function normalizeRules(raw) {
   list.forEach(function (rule, index) {
     if (!rule || typeof rule !== 'object') return;
     if (typeof rule.name !== 'string' || !rule.name.trim()) return;
-    const id = typeof rule.id === 'string' && rule.id ? rule.id : 'rule-' + index + '-' + crypto.randomBytes(3).toString('hex');
+    // 체크 해시 필드는 `date|ruleId`이므로 id에 구분자나 경로 문자를 허용하지 않는다.
+    const id = typeof rule.id === 'string' && ID_PATTERN.test(rule.id) ? rule.id : newRuleId(index);
     if (seen.has(id)) return;
     seen.add(id);
     out.push({
@@ -132,11 +138,17 @@ function seedRules() {
 async function readRules() {
   const reply = await command('/get/' + encodeURIComponent(RULES_KEY));
   if (reply && reply.result != null) {
+    let parsed = null;
     try {
-      return normalizeRules(JSON.parse(reply.result));
+      parsed = normalizeRules(JSON.parse(reply.result));
     } catch (err) {
-      return seedRules();
+      parsed = null;
     }
+    if (parsed && parsed.length) return parsed;
+    // 저장된 규칙이 비었거나 깨졌으면 시드를 실제로 다시 저장한다.
+    const repaired = seedRules();
+    await writeRules(repaired);
+    return repaired;
   }
 
   const legacy = await command('/get/' + encodeURIComponent(LEGACY_KEY));
