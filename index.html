@@ -61,6 +61,25 @@
   .rule-btn[aria-pressed="true"] .rcheck { background: var(--rc); border-color: var(--rc); color: #fff; }
   .empty { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
 
+  .praise { display: flex; flex-direction: column; gap: 10px; }
+  .praise-line {
+    margin: 0; display: flex; align-items: flex-start; gap: 8px;
+    font-size: 14px; font-weight: 600; line-height: 1.5;
+  }
+  .praise-emoji { font-size: 16px; line-height: 1.35; flex: none; }
+  .praise-line.celebrate { color: #b45309; }
+  .praise-line.pop { animation: praisePop 0.42s ease; }
+  @keyframes praisePop {
+    0% { transform: translateY(4px) scale(0.985); opacity: 0.35; }
+    60% { transform: translateY(0) scale(1.012); opacity: 1; }
+    100% { transform: none; opacity: 1; }
+  }
+  .quote {
+    margin: 0; padding-top: 10px; border-top: 1px dashed var(--line);
+    font-size: 12.5px; color: var(--muted); line-height: 1.55;
+  }
+  .quote .quote-by { display: block; margin-top: 3px; font-size: 11px; }
+
   .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
   .cal-title { margin: 0; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
@@ -75,7 +94,15 @@
   .cell:hover { background: var(--soft); }
   .cell:disabled { cursor: default; opacity: 0.3; }
   .cell:disabled:hover { background: transparent; }
-  .cell.all-done { background: var(--done); }
+  .cell.all-done {
+    background: linear-gradient(160deg, #fef3c7 0%, #e9f6ee 100%);
+    box-shadow: inset 0 0 0 1.5px #fbbf24;
+  }
+  .cell.all-done .num { font-weight: 700; color: #92400e; }
+  .cell.all-done::after {
+    content: '★'; position: absolute; top: 2px; right: 4px;
+    font-size: 9px; line-height: 1; color: #f59e0b;
+  }
   .cell.selected { box-shadow: inset 0 0 0 2px var(--ink); }
   .cell.today .num { font-weight: 700; }
   .cell .num { font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -84,6 +111,9 @@
   .legend { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; padding: 0; }
   .legend li { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
   .legend i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .legend .legend-star { color: #f59e0b; font-size: 10px; }
+  .cal-summary { margin: 10px 0 0; font-size: 11.5px; color: var(--muted); }
+  .cal-summary strong { color: #b45309; font-variant-numeric: tabular-nums; }
 
   .btn {
     font: inherit; font-size: 13px; padding: 7px 11px; border-radius: 9px;
@@ -152,6 +182,14 @@
     <p class="empty" id="loadError" hidden>서버에서 기록을 불러오지 못했습니다. <button class="btn" id="retryBtn" type="button">다시 시도</button></p>
   </section>
 
+  <section class="card praise" aria-label="응원과 오늘의 명언">
+    <p class="praise-line" id="praiseLine" aria-live="polite">
+      <span class="praise-emoji" id="praiseEmoji" aria-hidden="true">🌱</span>
+      <span id="praiseText">오늘도 한 걸음씩, 같이 해 봐요.</span>
+    </p>
+    <p class="quote" id="quoteLine"></p>
+  </section>
+
   <section class="card" aria-labelledby="calTitle">
     <div class="cal-head">
       <button class="icon" id="prevMonth" type="button" aria-label="이전 달">‹</button>
@@ -163,6 +201,7 @@
     </div>
     <div class="grid" id="calGrid"></div>
     <ul class="legend" id="legend"></ul>
+    <p class="cal-summary" id="calSummary"></p>
   </section>
 </main>
 
@@ -208,6 +247,45 @@
   var WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
   var MAX_STREAK_DAYS = 3660;
   var POLL_MS = 20000;
+
+  /* ---------- 응원 문구 / 명언 ---------- */
+
+  var PRAISES = [
+    '해냈어요! 오늘의 나를 한 번 칭찬해 주세요.',
+    '체크 하나가 쌓여 습관이 됩니다. 잘하고 있어요.',
+    '1학년 때 만든 이 작은 루틴이 4년을 바꿔요.',
+    '완벽하지 않아도 괜찮아요. 방금 그 한 칸이 제일 중요합니다.',
+    '스스로 정한 규칙을 지켰다는 사실, 그게 제일 멋있어요.',
+    '이 속도면 충분해요. 오늘 하나 더 해낸 것, 축하해요.',
+    '지금 이 체크가 내일의 나를 조금 더 편하게 만들어 줍니다.',
+    '몸이 기억할 때까지 반복하면 됩니다. 오늘도 성공!'
+  ];
+
+  var ALL_DONE_PRAISES = [
+    '오늘 세 가지 모두 달성! 이런 날이 쌓여서 진짜 실력이 됩니다. 🎉',
+    '완벽한 하루입니다. 스스로에게 상 하나 주세요! 🏅',
+    '세 개 다 지켰어요. 이건 운이 아니라 실력입니다. ✨'
+  ];
+
+  var UNDO_PRAISES = [
+    '체크를 잠시 풀었어요. 다시 하면 됩니다.',
+    '괜찮아요. 내일 다시 이어 가면 돼요.'
+  ];
+
+  var QUOTES = [
+    { text: '우리는 우리가 반복적으로 하는 행동의 결과다. 그러므로 탁월함은 행동이 아니라 습관이다.', by: '아리스토텔레스' },
+    { text: '시작하는 방법은 말하는 것을 멈추고 행동하는 것이다.', by: '월트 디즈니' },
+    { text: '오늘 할 수 있는 일을 내일로 미루지 마라.', by: '벤저민 프랭클린' },
+    { text: '성공은 매일 반복된 작은 노력의 합이다.', by: '로버트 콜리어' },
+    { text: '가장 어두운 밤도 끝나고 해는 다시 뜬다.', by: '빅토르 위고' },
+    { text: '할 수 있다고 믿든 할 수 없다고 믿든, 믿는 대로 된다.', by: '헨리 포드' },
+    { text: '천 리 길도 한 걸음부터.', by: '노자' },
+    { text: '지금이 바로 그때다. 완벽한 때는 오지 않는다.', by: '나폴레옹 힐' },
+    { text: '매일 조금씩, 그러나 멈추지 말 것.', by: '괴테' },
+    { text: '자신을 믿어라. 그러면 어떻게 살아야 할지 알게 된다.', by: '괴테' },
+    { text: '위대한 일은 충동이 아니라 작은 일의 연속으로 이루어진다.', by: '빈센트 반 고흐' },
+    { text: '배움에는 끝이 없고, 오늘의 노력은 내일의 나를 만든다.', by: '속담' }
+  ];
 
   /* ---------- pure helpers ---------- */
 
@@ -258,6 +336,11 @@
     return cells;
   }
 
+  function dayOfYear(date) {
+    var start = new Date(date.getFullYear(), 0, 1);
+    return Math.floor((date.getTime() - start.getTime()) / 86400000);
+  }
+
   if (typeof document === 'undefined') return;
 
   /* ---------- state ---------- */
@@ -269,6 +352,8 @@
   var view = { year: today.getFullYear(), month: today.getMonth() };
   var busy = false;
   var writeSeq = 0;
+  var praiseOverride = null;
+  var lastPraise = '';
 
 
   var el = {
@@ -279,8 +364,13 @@
     dayEyebrow: document.getElementById('dayEyebrow'),
     dayLabel: document.getElementById('dayLabel'),
     todayBtn: document.getElementById('todayBtn'),
+    praiseLine: document.getElementById('praiseLine'),
+    praiseEmoji: document.getElementById('praiseEmoji'),
+    praiseText: document.getElementById('praiseText'),
+    quoteLine: document.getElementById('quoteLine'),
     calTitle: document.getElementById('calTitle'),
     calGrid: document.getElementById('calGrid'),
+    calSummary: document.getElementById('calSummary'),
     legend: document.getElementById('legend'),
     prevMonth: document.getElementById('prevMonth'),
     nextMonth: document.getElementById('nextMonth'),
@@ -365,6 +455,63 @@
 
   function isToday() { return selectedKey === todayKey; }
 
+  function doneCount(key) {
+    var rules = activeRules();
+    var count = 0;
+    rules.forEach(function (rule) { if (isChecked(state.entries, key, rule.id)) count += 1; });
+    return count;
+  }
+
+  function pickPraise(list) {
+    if (!list.length) return '';
+    var choice = list[Math.floor(Math.random() * list.length)];
+    if (list.length > 1 && choice === lastPraise) {
+      choice = list[(list.indexOf(choice) + 1) % list.length];
+    }
+    lastPraise = choice;
+    return choice;
+  }
+
+  function defaultPraise() {
+    var rules = activeRules();
+    if (!state || !rules.length) {
+      return { emoji: '🌱', text: '규칙을 하나 정하면 오늘부터 시작할 수 있어요.' };
+    }
+    var done = doneCount(selectedKey);
+    if (done === 0) {
+      return { emoji: '🌱', text: '아직 0개예요. 하나만 체크해도 오늘이 달라집니다.' };
+    }
+    if (done === rules.length) {
+      return { emoji: '🏅', text: '오늘 ' + rules.length + '개 모두 달성했어요. 정말 자랑스러워요!', celebrate: true };
+    }
+    return { emoji: '💪', text: '오늘 ' + done + '/' + rules.length + ' 달성. 이 흐름 그대로 가요!' };
+  }
+
+  function renderPraise() {
+    var info = praiseOverride || defaultPraise();
+    el.praiseEmoji.textContent = info.emoji || '🌱';
+    el.praiseText.textContent = info.text;
+    el.praiseLine.classList.toggle('celebrate', !!info.celebrate);
+    if (info.pop) {
+      el.praiseLine.classList.remove('pop');
+      void el.praiseLine.offsetWidth;
+      el.praiseLine.classList.add('pop');
+      info.pop = false;
+    }
+  }
+
+  function renderQuote() {
+    var quote = QUOTES[dayOfYear(today) % QUOTES.length];
+    el.quoteLine.textContent = '';
+    var text = document.createElement('span');
+    text.textContent = '“' + quote.text + '”';
+    var by = document.createElement('span');
+    by.className = 'quote-by';
+    by.textContent = '— ' + quote.by;
+    el.quoteLine.appendChild(text);
+    el.quoteLine.appendChild(by);
+  }
+
   function renderDayCard() {
     var date = parseKey(selectedKey);
     el.dayEyebrow.textContent = isToday() ? '오늘' : '지난 기록';
@@ -420,6 +567,7 @@
     el.calTitle.textContent = view.year + '년 ' + (view.month + 1) + '월';
     var rules = activeRules();
     var entries = state ? state.entries : {};
+    var perfectDays = 0;
     el.calGrid.textContent = '';
 
     monthMatrix(view.year, view.month).forEach(function (date) {
@@ -452,18 +600,33 @@
         if (checked) dot.style.background = rule.color;
         dots.appendChild(dot);
       });
-      if (rules.length > 0 && checkedCount === rules.length) cell.classList.add('all-done');
+
+      var allDone = rules.length > 0 && checkedCount === rules.length;
+      if (allDone) {
+        cell.classList.add('all-done');
+        perfectDays += 1;
+      }
 
       var num = document.createElement('span');
       num.className = 'num';
       num.textContent = String(date.getDate());
-      cell.setAttribute('aria-label', date.getMonth() + 1 + '월 ' + date.getDate() + '일, ' + checkedCount + '/' + rules.length + ' 지킴');
+      cell.setAttribute('aria-label', date.getMonth() + 1 + '월 ' + date.getDate() + '일, ' +
+        checkedCount + '/' + rules.length + ' 지킴' + (allDone ? ', 모두 달성' : ''));
       if (key === selectedKey) cell.setAttribute('aria-current', 'date');
 
       cell.appendChild(num);
       cell.appendChild(dots);
       el.calGrid.appendChild(cell);
     });
+
+    el.calSummary.textContent = '';
+    if (rules.length > 0) {
+      var strong = document.createElement('strong');
+      strong.textContent = perfectDays + '일';
+      el.calSummary.appendChild(document.createTextNode('이번 달 모두 지킨 날 '));
+      el.calSummary.appendChild(strong);
+      el.calSummary.appendChild(document.createTextNode(' ★'));
+    }
   }
 
   function renderLegend() {
@@ -478,11 +641,25 @@
       li.appendChild(text);
       el.legend.appendChild(li);
     });
+
+    if (activeRules().length > 0) {
+      var starLi = document.createElement('li');
+      var star = document.createElement('span');
+      star.className = 'legend-star';
+      star.textContent = '★';
+      var starText = document.createElement('span');
+      starText.textContent = '모두 지킨 날';
+      starLi.appendChild(star);
+      starLi.appendChild(starText);
+      el.legend.appendChild(starLi);
+    }
   }
 
   function renderAll() {
     el.manageBtn.disabled = !state;
     renderDayCard();
+    renderPraise();
+    renderQuote();
     renderCalendar();
     renderLegend();
   }
@@ -492,6 +669,7 @@
   function selectDate(key) {
     if (key > todayKey) return;
     selectedKey = key;
+    praiseOverride = null;
     var date = parseKey(key);
     view = { year: date.getFullYear(), month: date.getMonth() };
     renderAll();
@@ -500,7 +678,22 @@
   async function toggleRule(ruleId) {
     if (!state || selectedKey > todayKey) return;
     var nextValue = !isChecked(state.entries, selectedKey, ruleId);
-    await mutate({ action: 'check', date: selectedKey, ruleId: ruleId, value: nextValue }, '체크를 저장하지 못했습니다.');
+    var ok = await mutate({ action: 'check', date: selectedKey, ruleId: ruleId, value: nextValue }, '체크를 저장하지 못했습니다.');
+    if (!ok) return;
+
+    var rules = activeRules();
+    if (nextValue) {
+      var done = doneCount(selectedKey);
+      if (rules.length > 0 && done === rules.length) {
+        praiseOverride = { emoji: '🏅', text: pickPraise(ALL_DONE_PRAISES), celebrate: true, pop: true };
+        toast('오늘 모두 달성했어요! 🎉');
+      } else {
+        praiseOverride = { emoji: '✨', text: pickPraise(PRAISES), celebrate: false, pop: true };
+      }
+    } else {
+      praiseOverride = { emoji: '🌿', text: pickPraise(UNDO_PRAISES), celebrate: false, pop: true };
+    }
+    renderPraise();
   }
 
   async function saveRules(rules, message) {
