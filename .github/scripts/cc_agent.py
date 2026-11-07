@@ -449,14 +449,16 @@ def build_system_prompt(repo: str, issue: dict, fix_mode: bool, file_list: list[
             "- 작은 수정은 replace_in_file(파일 안에서 정확히 한 번 일치하는 문자열)을 쓰고, 전체 재작성이",
             "  필요할 때만 read_file 로 읽은 뒤 write_file 을 씁니다. 기존 내용을 지어내지 않습니다.",
             "- 수정 후에는 read_file 로 바뀐 부분을 다시 읽어 문법·중괄호·태그가 맞는지 확인합니다.",
-            "- 최종 답변에 전체 코드를 붙여 넣지 않습니다. 코드는 파일에만 쓰고, 답변은 무엇을 왜 바꿨는지만 씁니다.",
+            "- 답변(설명)은 자세해도 됩니다. 무엇을 왜 어떻게 바꿨는지 충분히 서술하세요.",
+            "- 다만 코드 블록(```)은 넣지 않습니다. 코드는 파일에만 쓰고, 답변에서는 `파일:줄` 인용과 짧은 인라인 코드만 씁니다.",
         ]
     else:
         mode_lines = [
             "지금은 **분석 모드**입니다. 파일을 수정하지 않습니다.",
             "- 사용자가 /cc fix 를 다시 요청하면 바로 구현할 수 있도록, 어느 파일의 어느 부분을",
             "  어떻게 고쳐야 하는지 구체적으로 짚어 줍니다.",
-            "- 최종 답변에 전체 파일 코드를 붙여 넣지 않습니다. 필요한 부분만 5줄 이내로 인용합니다.",
+            "- 답변(설명)은 자세해도 됩니다.",
+            "- 다만 코드 블록(```)은 넣지 않습니다. `파일:줄` 인용과 짧은 인라인 코드만 씁니다.",
         ]
 
     head = [
@@ -639,23 +641,17 @@ def validate_changes(files: dict[str, str]) -> list[str]:
     return notes
 
 
-def trim_comment(text: str, limit: int = 1400) -> str:
-    """이슈에는 요약만 남긴다 — 긴 코드 블록과 fix_plan 은 걷어낸다."""
+def trim_comment(text: str, limit: int = 6000) -> str:
+    """이슈 코멘트는 설명 중심으로 남긴다 — 코드 블록은 PR 에만 둔다."""
     cleaned = re.sub(r"```fix_plan.*?```", "(코드는 PR 에만 반영했습니다)", text, flags=re.S)
 
-    def shrink(match: "re.Match[str]") -> str:
-        header = match.group(1)
-        body = match.group(2)
-        lines = body.splitlines()
-        if len(lines) <= 12:
-            return match.group(0)
-        kept = "\n".join(lines[:10])
-        return f"```{header}\n{kept}\n... ({len(lines) - 10}줄 생략)\n```"
-
-    cleaned = re.sub(r"```(\w*)\n(.*?)```", shrink, cleaned, flags=re.S)
+    # 설명은 그대로 두고 코드 펜스만 걷어낸다.
+    cleaned = re.sub(r"```[^\n]*\n.*?```", "(코드 생략 — PR 참고)", cleaned, flags=re.S)
+    cleaned = re.sub(r"```[^\n]*```", "(코드 생략 — PR 참고)", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
     if len(cleaned) > limit:
-        cleaned = cleaned[:limit].rstrip() + "\n\n… (요약. 전체 변경은 PR 참고)"
+        cleaned = cleaned[:limit].rstrip() + "\n\n… (설명이 길어 여기서 줄였습니다. 전체 변경은 PR 참고)"
     return cleaned
 
 
