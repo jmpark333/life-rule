@@ -34,6 +34,18 @@ module.exports = async function handler(req, res) {
         return lib.send(res, 409, { ok: false, error: 'rule-not-found', state: await lib.readState() });
       }
       await lib.setCheck(date, ruleId, body.value === true);
+    } else if (body.action === 'note') {
+      const date = String(body.date || '');
+      const ruleId = String(body.ruleId || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !ruleId) {
+        return lib.send(res, 400, { ok: false, error: 'bad-request' });
+      }
+      const rules = await lib.readRules();
+      const rule = rules.find(function (r) { return r.id === ruleId; });
+      if (!rule || rule.archived) {
+        return lib.send(res, 409, { ok: false, error: 'rule-not-found', state: await lib.readState() });
+      }
+      await lib.setNote(date, ruleId, body.text);
     } else if (body.action === 'rules') {
       const rules = lib.normalizeRules(body.rules);
       if (!rules.length) {
