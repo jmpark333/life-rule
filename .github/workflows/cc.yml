@@ -24,9 +24,10 @@ concurrency:
 jobs:
   analyze:
     if: >-
-      contains(github.event.comment.body, '/cc') ||
-      contains(github.event.issue.body, '/cc')
+      contains(github.event.comment.body || '', '/cc') ||
+      contains(github.event.issue.body || '', '/cc')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: 권한 확인
         id: gate
@@ -86,5 +87,5 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           COMMAND_TEXT: ${{ steps.cmd.outputs.text }}
           EVENT_PATH: ${{ github.event_path }}
-          CMD_MODEL: deepseek/deepseek-v4.1-flash
+          CMD_MODEL: ${{ vars.CC_MODEL || 'deepseek/deepseek-v4.1-flash' }}
         run: python3 .github/scripts/cc_agent.py

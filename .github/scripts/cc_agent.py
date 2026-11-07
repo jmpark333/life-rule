@@ -34,7 +34,7 @@ MAX_TOKENS = int(os.environ.get("CMD_MAX_TOKENS", "16000"))
 GH_API = "https://api.github.com"
 WORKSPACE = Path(os.environ.get("GITHUB_WORKSPACE", ".")).resolve()
 
-MAX_STEPS = 24
+MAX_STEPS = 40
 MAX_TOOL_OUTPUT = 12_000
 MAX_FILE_BYTES = 120_000
 MAX_HISTORY_CHARS = 180_000
@@ -110,7 +110,54 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "replace_in_file",
+            "description": "파일의 일부를 바꾼다. old_text 가 파일 안에서 정확히 한 번만 나와야 한다. "
+                           "작은 수정은 이 도구를 쓰고, 새 파일이나 전면 개편만 write_file 을 쓴다.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "저장소 루트 기준 상대 경로"},
+                    "old_text": {"type": "string", "description": "바꿀 원본 텍스트(공백·줄바꿈 포함, 파일과 완전히 동일해야 함)"},
+                    "new_text": {"type": "string", "description": "대체할 텍스트"},
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "파일 전체를 새 내용으로 저장한다(없으면 생성). 기존 파일을 덮어쓸 때는 "
+                           "반드시 read_file 로 먼저 읽어 나머지 내용을 보존해야 한다.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "저장소 루트 기준 상대 경로"},
+                    "content": {"type": "string", "description": "파일 전체 내용"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_file",
+            "description": "파일을 삭제한다. 정말 필요할 때만 사용한다.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
 ]
+
+EDITED: set[str] = set()
 
 
 class AgentError(RuntimeError):
@@ -244,11 +291,64 @@ def tool_grep(pattern: str, glob: str | None = None, max_results: int = 60) -> s
     return ("(일치 없음)" if not hits else f"{len(hits)}건\n" + "\n".join(hits))
 
 
+def rel_of(target: Path) -> str:
+    return PurePosixPath(target.relative_to(WORKSPACE).as_posix()).as_posix()
+
+
+def tool_replace_in_file(path: str, old_text: str, new_text: str) -> str:
+    target = safe_path(path)
+    if not target.is_file():
+        raise AgentError(f"파일이 없습니다: {path}")
+    if not old_text:
+        raise AgentError("old_text 가 비어 있습니다.")
+    text = target.read_text(encoding="utf-8")
+    count = text.count(old_text)
+    if count == 0:
+        raise AgentError(
+            "일치하는 부분이 없습니다. read_file 로 실제 내용을 다시 확인하고 "
+            "공백·들여쓰기까지 동일하게 넣어 주세요."
+        )
+    if count > 1:
+        raise AgentError(
+            f"{count}곳이 일치해 어느 곳인지 알 수 없습니다. 앞뒤 줄을 포함해 더 길게 지정하세요."
+        )
+    target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+    rel = rel_of(target)
+    EDITED.add(rel)
+    return f"수정 완료: {rel}"
+
+
+def tool_write_file(path: str, content: str) -> str:
+    target = safe_path(path)
+    if target.suffix.lower() in BINARY_EXT:
+        raise AgentError("바이너리 파일은 쓸 수 없습니다.")
+    if len(content.encode("utf-8")) > MAX_FILE_BYTES:
+        raise AgentError(f"내용이 너무 큽니다({len(content)}자). 파일을 나누거나 replace_in_file 을 쓰세요.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    rel = rel_of(target)
+    EDITED.add(rel)
+    return f"저장 완료: {rel} ({len(content.splitlines())}줄)"
+
+
+def tool_delete_file(path: str) -> str:
+    target = safe_path(path)
+    if not target.is_file():
+        raise AgentError(f"파일이 없습니다: {path}")
+    rel = rel_of(target)
+    target.unlink()
+    EDITED.add(rel)
+    return f"삭제 완료: {rel}"
+
+
 TOOL_IMPL = {
     "list_files": tool_list_files,
     "read_file": tool_read_file,
     "grep": tool_grep,
     "list_dir": tool_list_dir,
+    "replace_in_file": tool_replace_in_file,
+    "write_file": tool_write_file,
+    "delete_file": tool_delete_file,
 }
 
 
@@ -298,35 +398,87 @@ def truncate_history(messages: list[dict]) -> list[dict]:
     return keep_head + [{"role": "system", "content": "이전 도구 출력 일부를 용량 때문에 생략했습니다."}] + kept
 
 
-def build_system_prompt(repo: str, issue: dict, fix_mode: bool) -> str:
-    mode_rule = (
-        "- 사용자가 /cc fix 를 요청했으므로 문제를 실제로 고치는 패치를 제안합니다.\n"
-        "  파일 수정은 하지 않습니다. 대신 `fix_plan` 블록에 수정 내용을 적습니다."
-        if fix_mode else
-        "- 분석과 답변만 합니다. 파일을 수정하거나 파일 수정 계획을 지시하지 않습니다."
-    )
-    return f"""당신은 GitHub 저장소 `{repo}` 의 코드 분석 에이전트입니다.
+def repo_map() -> str:
+    """최상위 구조 요약 — 모델이 어디를 고쳐야 하는지 바로 알도록."""
+    lines: list[str] = []
+    try:
+        for child in sorted(WORKSPACE.iterdir()):
+            if child.name in SKIP_DIRS or child.name == ".git":
+                continue
+            if child.name.startswith(".") and child.name != ".github":
+                continue
+            if child.is_dir():
+                names = []
+                for sub in sorted(child.iterdir()):
+                    if sub.name in SKIP_DIRS:
+                        continue
+                    names.append(sub.name + ("/" if sub.is_dir() else ""))
+                    if len(names) >= 12:
+                        names.append("...")
+                        break
+                lines.append(f"- {child.name}/ : {', '.join(names)}")
+            else:
+                size = child.stat().st_size
+                pages = ""
+                try:
+                    text = child.read_text(encoding="utf-8")
+                    pages = f", {len(text.splitlines())}줄"
+                except (UnicodeDecodeError, OSError):
+                    pages = ""
+                lines.append(f"- {child.name} ({size}B{pages})")
+    except OSError:
+        return "(구조를 읽지 못했습니다)"
+    return chr(10).join(lines) if lines else "(빈 저장소)"
 
-이슈 제목: {issue.get('title', '')}
-이슈 본문:
-{(issue.get('body') or '(본문 없음)')[:4000]}
 
-규칙:
-- 먼저 도구로 저장소를 충분히 탐색한 뒤 근거를 들어 답합니다. 추측을 사실처럼 쓰지 않습니다.
-- 파일 인용 시 `경로:줄번호` 형식을 사용합니다.
-- 확인하지 못한 내용은 "확인 필요"라고 명시합니다.
-- 최종 답변은 한국어 존댓말로 작성합니다.
-- 최종 답변은 마크다운이며 200~900단어로 간결하게 작성합니다.
-- 도구 호출은 최대 {MAX_STEPS}회입니다. 4~10회 안에 결론을 내도록 효율적으로 탐색합니다.
-{mode_rule}
-- 최종 답변에 ```fix_plan ... ``` 코드블록을 넣으면 자동으로 PR 이 생성됩니다.
-  fix_plan 형식(각 항목은 정확한 전체 파일 내용이어야 합니다):
-  ```fix_plan
-  ### path/to/file.py
-  <해당 파일의 전체 새 내용>
-  ```
-  수정할 파일이 여러 개면 `### 경로` 를 반복합니다.
-"""
+def ui_hint(files: list[str]) -> str:
+    """화면 관련 파일을 찾아 '여기를 고쳐야 UI 가 바뀐다'를 짚어 준다."""
+    hits = [f for f in files if re.search(r"\.(html?|tsx|jsx|vue|svelte|css|scss)$", f, re.I)]
+    return ", ".join(hits[:8]) if hits else "(화면 파일을 찾지 못했습니다. list_files 로 확인하세요.)"
+
+
+def build_system_prompt(repo: str, issue: dict, fix_mode: bool, file_list: list[str]) -> str:
+    if fix_mode:
+        mode_lines = [
+            "지금은 **수정 모드**입니다. 분석만 하고 끝내지 말고, write_file / replace_in_file 로",
+            "저장소 파일을 실제로 고친 뒤 끝냅니다.",
+            "- 요청을 **백엔드에서만 구현하고 멈추지 않습니다.** 사용자가 보는 화면(버튼·입력·문구·표시)까지",
+            "  같은 작업에서 모두 구현합니다.",
+            "- 화면이 바뀌는 요청이면 화면 파일도 반드시 수정합니다. 저장소만 만들고 '준비되었다'고 끝내면 실패입니다.",
+            "- 여러 계층이 필요하면 서버(API/저장) → 화면 순서로 끝까지 이어서 구현합니다.",
+            "- 작은 수정은 replace_in_file(파일 안에서 정확히 한 번 일치하는 문자열)을 쓰고, 전체 재작성이",
+            "  필요할 때만 read_file 로 읽은 뒤 write_file 을 씁니다. 기존 내용을 지어내지 않습니다.",
+            "- 수정 후에는 read_file 로 바뀐 부분을 다시 읽어 문법·중괄호·태그가 맞는지 확인합니다.",
+            "- 최종 답변에 전체 코드를 붙여 넣지 않습니다. 코드는 파일에만 쓰고, 답변은 무엇을 왜 바꿨는지만 씁니다.",
+        ]
+    else:
+        mode_lines = [
+            "지금은 **분석 모드**입니다. 파일을 수정하지 않습니다.",
+            "- 사용자가 /cc fix 를 다시 요청하면 바로 구현할 수 있도록, 어느 파일의 어느 부분을",
+            "  어떻게 고쳐야 하는지 구체적으로 짚어 줍니다.",
+            "- 최종 답변에 전체 파일 코드를 붙여 넣지 않습니다. 필요한 부분만 5줄 이내로 인용합니다.",
+        ]
+
+    head = [
+        "당신은 GitHub 저장소 `" + repo + "` 의 코드 에이전트입니다.",
+        "",
+        "이슈 제목: " + str(issue.get("title", "")),
+        "이슈 본문:",
+        (issue.get("body") or "(본문 없음)")[:4000],
+        "",
+        "저장소 최상위 구조:",
+        repo_map(),
+        "",
+        "화면(UI) 관련 파일 후보: " + ui_hint(file_list),
+        "",
+        "규칙:",
+        "- 먼저 도구로 저장소를 충분히 확인한 뒤 판단합니다. 추측을 사실처럼 쓰지 않습니다.",
+        "- 파일 인용 시 `경로:줄번호` 형식을 사용합니다.",
+        "- 확인하지 못한 내용은 \"확인 필요\"라고 명시합니다.",
+        "- 최종 답변은 한국어 존댓말 마크다운으로 3~9줄. 이슈에 코드 전문을 붙이지 않습니다.",
+        "- 도구 호출은 최대 " + str(MAX_STEPS) + "회입니다.",
+    ]
+    return chr(10).join(head + mode_lines) + chr(10)
 
 
 def extract_fix_plan(text: str) -> dict[str, str]:
@@ -349,7 +501,10 @@ def extract_fix_plan(text: str) -> dict[str, str]:
     return {k: v for k, v in files.items() if v.strip()}
 
 
-def run_agent(system_prompt: str, require_fix_plan: bool = False) -> tuple[str, dict[str, str]]:
+def run_agent(system_prompt: str, require_fix_plan: bool = False,
+              extra_instruction: str = "") -> tuple[str, dict[str, str]]:
+    if extra_instruction:
+        system_prompt = system_prompt + chr(10) + chr(10) + extra_instruction
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": "지금 저장소를 분석하고 결론을 제시해 주세요."},
@@ -420,9 +575,93 @@ def post_comment(repo: str, issue_number: int, body: str, token: str) -> None:
               token, {"body": body})
 
 
-def create_pr(repo: str, issue_number: int, files: dict[str, str],
-              base_branch: str, token: str) -> str | None:
-    if not files:
+def git_changed() -> tuple[dict[str, str], list[str]]:
+    """워크스페이스에서 실제로 바뀐 파일을 모은다(삭제 포함)."""
+    proc = subprocess.run(["git", "status", "--porcelain"], cwd=WORKSPACE,
+                          capture_output=True, text=True)
+    files: dict[str, str] = {}
+    deleted: list[str] = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        status = line[:2]
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ")[-1].strip()
+        if path.startswith('"') and path.endswith('"'):
+            path = path[1:-1]
+        if is_skipped(PurePosixPath(path)):
+            continue
+        target = WORKSPACE / path
+        if target.is_dir():
+            for sub in sorted(target.rglob("*")):
+                if not sub.is_file() or "__pycache__" in sub.parts:
+                    continue
+                sub_rel = PurePosixPath(sub.relative_to(WORKSPACE).as_posix()).as_posix()
+                try:
+                    files[sub_rel] = sub.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+            continue
+        if "D" in status or (not status.strip().startswith("??") and not target.is_file()):
+            deleted.append(path)
+            continue
+        if target.suffix.lower() in BINARY_EXT:
+            continue
+        try:
+            files[path] = target.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+    return files, deleted
+
+
+def validate_changes(files: dict[str, str]) -> list[str]:
+    notes: list[str] = []
+    diff_check = subprocess.run(["git", "diff", "--check"], cwd=WORKSPACE,
+                                capture_output=True, text=True)
+    if diff_check.returncode != 0:
+        notes.append("공백/충돌 표시 문제: " + (diff_check.stdout or diff_check.stderr).strip()[:300])
+    py_files = [p for p in files if p.endswith(".py")]
+    if py_files:
+        proc = subprocess.run([sys.executable, "-m", "py_compile", *py_files], cwd=WORKSPACE,
+                              capture_output=True, text=True)
+        notes.append("python 문법: " + ("통과" if proc.returncode == 0 else proc.stderr.strip()[:300]))
+    pkg = WORKSPACE / "package.json"
+    if pkg.is_file() and any(p.endswith((".js", ".html", ".ts")) for p in files):
+        try:
+            scripts = (json.loads(pkg.read_text(encoding="utf-8")).get("scripts") or {})
+        except json.JSONDecodeError:
+            scripts = {}
+        if "test" in scripts:
+            proc = subprocess.run(["npm", "test", "--silent"], cwd=WORKSPACE,
+                                  capture_output=True, text=True, timeout=300)
+            notes.append("npm test: " + ("통과" if proc.returncode == 0 else proc.stdout.strip()[-300:]))
+    return notes
+
+
+def trim_comment(text: str, limit: int = 1400) -> str:
+    """이슈에는 요약만 남긴다 — 긴 코드 블록과 fix_plan 은 걷어낸다."""
+    cleaned = re.sub(r"```fix_plan.*?```", "(코드는 PR 에만 반영했습니다)", text, flags=re.S)
+
+    def shrink(match: "re.Match[str]") -> str:
+        header = match.group(1)
+        body = match.group(2)
+        lines = body.splitlines()
+        if len(lines) <= 12:
+            return match.group(0)
+        kept = "\n".join(lines[:10])
+        return f"```{header}\n{kept}\n... ({len(lines) - 10}줄 생략)\n```"
+
+    cleaned = re.sub(r"```(\w*)\n(.*?)```", shrink, cleaned, flags=re.S)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit].rstrip() + "\n\n… (요약. 전체 변경은 PR 참고)"
+    return cleaned
+
+
+def create_pr(repo: str, issue_number: int, files: dict[str, str], deletions: list[str],
+              base_branch: str, token: str, notes: list[str], summary: str) -> str | None:
+    if not files and not deletions:
         return None
     ref = http_json("GET", f"{GH_API}/repos/{repo}/git/ref/heads/{base_branch}", token)
     base_sha = ref["object"]["sha"]
@@ -434,6 +673,8 @@ def create_pr(repo: str, issue_number: int, files: dict[str, str],
         blob = http_json("POST", f"{GH_API}/repos/{repo}/git/blobs", token,
                          {"content": content, "encoding": "utf-8"})
         tree_items.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
+    for path in deletions:
+        tree_items.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
 
     new_tree = http_json("POST", f"{GH_API}/repos/{repo}/git/trees", token,
                          {"base_tree": base_tree, "tree": tree_items})
@@ -450,12 +691,25 @@ def create_pr(repo: str, issue_number: int, files: dict[str, str],
         http_json("PATCH", f"{GH_API}/repos/{repo}/git/refs/heads/{branch}", token,
                   {"sha": new_commit["sha"], "force": True})
 
+    changed = [*files.keys(), *[d + " (삭제)" for d in deletions]]
+    body_lines = [
+        f"이슈 #{issue_number} 의 `/cc fix` 요청으로 생성되었습니다.",
+        "",
+        "## 변경 파일",
+        *[f"- `{c}`" for c in changed],
+        "",
+        "## 에이전트 요약",
+        summary.strip()[:1200] or "(요약 없음)",
+    ]
+    if notes:
+        body_lines += ["", "## 자동 검증"] + [f"- {n}" for n in notes]
+    body_lines += ["", "머지 전 반드시 사람이 검토하세요."]
+
     pr = http_json("POST", f"{GH_API}/repos/{repo}/pulls", token, {
         "title": f"fix: /cc 자동 수정 (issue #{issue_number})",
         "head": branch,
         "base": base_branch,
-        "body": f"이슈 #{issue_number} 의 `/cc fix` 요청으로 생성되었습니다.\n\n"
-                f"수정 파일: {', '.join(files)}\n\n머지 전 반드시 사람이 검토하세요.",
+        "body": "\n".join(body_lines),
     })
     return pr.get("html_url")
 
@@ -497,21 +751,50 @@ def main() -> int:
 
     issue = http_json("GET", f"{GH_API}/repos/{repo}/issues/{issue_number}", token)
     base_branch = (http_json("GET", f"{GH_API}/repos/{repo}", token)).get("default_branch") or "main"
+    file_list = [line.strip() for line in tool_list_files(limit=400).splitlines()[1:]]
 
-    system_prompt = build_system_prompt(repo, issue, fix_mode)
-    answer, fix_files = run_agent(system_prompt, require_fix_plan=fix_mode)
+    system_prompt = build_system_prompt(repo, issue, fix_mode, file_list)
 
-    body = f"## `/cc` 분석 결과\n\n{answer}\n\n---\n<sub>모델: `{MODEL}`</sub>"
-    if fix_mode and fix_files:
-        try:
-            pr_url = create_pr(repo, issue_number, fix_files, base_branch, token)
-            if pr_url:
-                body += f"\n\n**PR 생성됨:** {pr_url}"
-        except AgentError as exc:
-            body += f"\n\n**PR 생성 실패:** {exc}"
-            print(f"::warning::PR 생성 실패: {exc}")
+    retry_note = (
+        "중요: 이전 시도에서 파일을 하나도 수정하지 않았습니다. 설명으로 끝내지 말고, "
+        "지금 바로 write_file 이나 replace_in_file 로 실제 파일을 고치세요. "
+        "화면 변경이 필요한 요청이라면 화면 파일도 반드시 포함하세요."
+    )
+    answer, fix_files = run_agent(system_prompt)
+    files, deletions = git_changed()
 
-    post_comment(repo, issue_number, body, token)
+    if fix_mode and not files and not deletions:
+        print("::notice::수정이 없어 한 번 재시도합니다.")
+        answer2, fix_files = run_agent(system_prompt, extra_instruction=retry_note)
+        if answer2:
+            answer = answer2
+        files, deletions = git_changed()
+
+    if not files and fix_files:
+        files = dict(fix_files)
+
+    body_parts = ["## `/cc` 결과", "", trim_comment(answer)]
+    if fix_mode:
+        notes = validate_changes(files)
+        if files or deletions:
+            try:
+                pr_url = create_pr(repo, issue_number, files, deletions, base_branch, token,
+                                   notes, answer)
+                if pr_url:
+                    body_parts += ["", f"**PR 생성됨:** {pr_url}"]
+                else:
+                    body_parts += ["", "**변경 사항이 없어 PR 을 만들지 않았습니다.**"]
+            except AgentError as exc:
+                body_parts += ["", f"**PR 생성 실패:** {exc}"]
+                print(f"::warning::PR 생성 실패: {exc}")
+        else:
+            body_parts += ["", "**파일이 수정되지 않았습니다.** 요청을 더 구체적으로 적거나 "
+                                "`/cc fix` 를 다시 남겨 주세요."]
+            if notes:
+                body_parts += ["", *[f"- {n}" for n in notes]]
+
+    body_parts += ["", "---", f"<sub>모델: `{MODEL}`</sub>"]
+    post_comment(repo, issue_number, "\n".join(body_parts), token)
     print("코멘트 게시 완료")
     print("::endgroup::")
     return 0
