@@ -61,6 +61,34 @@
   .rule-btn[aria-pressed="true"] .rcheck { background: var(--rc); border-color: var(--rc); color: #fff; }
   .empty { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
 
+  .rule-item { display: flex; flex-direction: column; }
+  .rule-row { display: flex; align-items: center; gap: 4px; }
+  .rule-row .rule-btn { flex: 1; min-width: 0; }
+  .memo-btn {
+    flex: none; font: inherit; font-size: 11px; color: var(--muted);
+    background: transparent; border: 0; border-radius: 8px; padding: 6px 8px; cursor: pointer;
+  }
+  .memo-btn:hover { background: var(--soft); color: var(--ink); }
+  .memo-btn:focus-visible { outline: 2px solid #9ca3af; outline-offset: 1px; }
+  .memo-btn.has-note { color: #b45309; font-weight: 600; }
+  .memo-text {
+    margin: 0 0 8px 38px; font-size: 12.5px; color: #4b5563; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .memo-editor { margin: 2px 0 10px 38px; display: flex; flex-direction: column; gap: 6px; }
+  .memo-editor textarea {
+    font: inherit; font-size: 13px; line-height: 1.5; padding: 8px 10px; min-height: 64px;
+    border: 1px solid var(--line); border-radius: 10px; resize: vertical;
+    background: #fff; color: inherit;
+  }
+  .memo-editor textarea:focus { outline: 2px solid #9ca3af; outline-offset: 1px; }
+  .memo-actions { display: flex; align-items: center; gap: 6px; }
+  .memo-count { margin-right: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cell.has-note::before {
+    content: '✎'; position: absolute; left: 4px; bottom: 2px;
+    font-size: 8px; color: #b45309; line-height: 1;
+  }
+
   .praise { display: flex; flex-direction: column; gap: 10px; }
   .praise-line {
     margin: 0; display: flex; align-items: flex-start; gap: 8px;
@@ -681,6 +709,103 @@
     el.quoteLine.appendChild(by);
   }
 
+  /* ---------- 메모(비고) ---------- */
+
+  function noteFor(dateKeyString, ruleId) {
+    if (!state || !state.notes) return '';
+    var day = state.notes[dateKeyString];
+    return day && typeof day[ruleId] === 'string' ? day[ruleId] : '';
+  }
+
+  function dayHasNote(dateKeyString) {
+    if (!state || !state.notes) return false;
+    var day = state.notes[dateKeyString];
+    return !!(day && Object.keys(day).some(function (ruleId) { return !!day[ruleId]; }));
+  }
+
+  function closeMemoEditor() {
+    var open = document.querySelector('.memo-editor');
+    if (open) open.remove();
+  }
+
+  function openMemoEditor(ruleId, container) {
+    closeMemoEditor();
+    var note = noteFor(selectedKey, ruleId);
+
+    var box = document.createElement('div');
+    box.className = 'memo-editor';
+
+    var area = document.createElement('textarea');
+    area.rows = 3;
+    area.maxLength = 200;
+    area.value = note;
+    area.placeholder = '왜 못 지켰는지, 덧붙일 내용을 적어 주세요 (200자)';
+    area.setAttribute('aria-label', '메모 내용');
+
+    var actions = document.createElement('div');
+    actions.className = 'memo-actions';
+
+    var count = document.createElement('span');
+    count.className = 'memo-count';
+    var updateCount = function () { count.textContent = area.value.length + ' / 200'; };
+    updateCount();
+    area.addEventListener('input', updateCount);
+
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.textContent = '취소';
+    cancel.addEventListener('click', closeMemoEditor);
+
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn';
+    save.textContent = '저장';
+    save.addEventListener('click', async function () {
+      save.disabled = true;
+      var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: area.value }, '메모를 저장하지 못했습니다.');
+      save.disabled = false;
+      if (ok) {
+        closeMemoEditor();
+        toast(area.value.trim() ? '메모를 남겼습니다.' : '메모를 지웠습니다.');
+      }
+    });
+
+    actions.appendChild(count);
+    if (note) {
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'btn';
+      remove.textContent = '삭제';
+      remove.addEventListener('click', async function () {
+        remove.disabled = true;
+        var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: '' }, '메모를 지우지 못했습니다.');
+        remove.disabled = false;
+        if (ok) { closeMemoEditor(); toast('메모를 지웠습니다.'); }
+      });
+      actions.appendChild(remove);
+    }
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+
+    area.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') { event.preventDefault(); closeMemoEditor(); }
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); save.click(); }
+    });
+
+    box.appendChild(area);
+    box.appendChild(actions);
+    container.appendChild(box);
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+  }
+
+  function toggleMemoEditor(ruleId, container) {
+    var open = document.querySelector('.memo-editor');
+    if (open && open.parentElement === container) { open.remove(); return; }
+    openMemoEditor(ruleId, container);
+  }
+
   function renderDayCard() {
     var date = parseKey(selectedKey);
     el.dayEyebrow.textContent = isToday() ? '오늘' : '지난 기록';
@@ -698,8 +823,14 @@
     rules.forEach(function (rule) {
       var checked = isChecked(state.entries, selectedKey, rule.id);
       var streak = computeStreak(state.entries, rule.id, date);
+      var note = noteFor(selectedKey, rule.id);
 
       var li = document.createElement('li');
+      li.className = 'rule-item';
+
+      var row = document.createElement('div');
+      row.className = 'rule-row';
+
       var button = document.createElement('button');
       button.type = 'button';
       button.className = 'rule-btn';
@@ -727,7 +858,24 @@
       button.appendChild(name);
       button.appendChild(streakEl);
       button.appendChild(check);
-      li.appendChild(button);
+      row.appendChild(button);
+
+      var memoBtn = document.createElement('button');
+      memoBtn.type = 'button';
+      memoBtn.className = 'memo-btn' + (note ? ' has-note' : '');
+      memoBtn.textContent = note ? '메모 ✓' : '메모';
+      memoBtn.dataset.memoRule = rule.id;
+      memoBtn.setAttribute('aria-label', rule.name + ' 메모 ' + (note ? '수정' : '추가'));
+      row.appendChild(memoBtn);
+      li.appendChild(row);
+
+      if (note) {
+        var noteText = document.createElement('p');
+        noteText.className = 'memo-text';
+        noteText.textContent = note;
+        li.appendChild(noteText);
+      }
+
       el.ruleList.appendChild(li);
     });
   }
@@ -775,6 +923,7 @@
         cell.classList.add('all-done');
         perfectDays += 1;
       }
+      if (dayHasNote(key)) cell.classList.add('has-note');
 
       var num = document.createElement('span');
       num.className = 'num';
@@ -1032,6 +1181,11 @@
   /* ---------- wiring ---------- */
 
   el.ruleList.addEventListener('click', function (event) {
+    var memoBtn = event.target.closest('.memo-btn');
+    if (memoBtn) {
+      toggleMemoEditor(memoBtn.dataset.memoRule, memoBtn.closest('.rule-item'));
+      return;
+    }
     var button = event.target.closest('.rule-btn');
     if (!button) return;
     var rect = button.getBoundingClientRect();
