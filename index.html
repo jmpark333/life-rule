@@ -740,7 +740,7 @@
     area.maxLength = 200;
     area.value = note;
     area.placeholder = '왜 못 지켰는지, 덧붙일 내용을 적어 주세요 (200자)';
-    area.setAttribute('aria-label', '메모 내용');
+    area.setAttribute('aria-label', '비고 내용');
 
     var actions = document.createElement('div');
     actions.className = 'memo-actions';
@@ -763,11 +763,11 @@
     save.textContent = '저장';
     save.addEventListener('click', async function () {
       save.disabled = true;
-      var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: area.value }, '메모를 저장하지 못했습니다.');
+      var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: area.value }, '비고를 저장하지 못했습니다.');
       save.disabled = false;
       if (ok) {
         closeMemoEditor();
-        toast(area.value.trim() ? '메모를 남겼습니다.' : '메모를 지웠습니다.');
+        toast(area.value.trim() ? '비고를 남겼습니다.' : '비고를 지웠습니다.');
       }
     });
 
@@ -779,9 +779,9 @@
       remove.textContent = '삭제';
       remove.addEventListener('click', async function () {
         remove.disabled = true;
-        var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: '' }, '메모를 지우지 못했습니다.');
+        var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: '' }, '비고를 지우지 못했습니다.');
         remove.disabled = false;
-        if (ok) { closeMemoEditor(); toast('메모를 지웠습니다.'); }
+        if (ok) { closeMemoEditor(); toast('비고를 지웠습니다.'); }
       });
       actions.appendChild(remove);
     }
@@ -863,9 +863,9 @@
       var memoBtn = document.createElement('button');
       memoBtn.type = 'button';
       memoBtn.className = 'memo-btn' + (note ? ' has-note' : '');
-      memoBtn.textContent = note ? '메모 ✓' : '메모';
+      memoBtn.textContent = note ? '비고 ✓' : '비고';
       memoBtn.dataset.memoRule = rule.id;
-      memoBtn.setAttribute('aria-label', rule.name + ' 메모 ' + (note ? '수정' : '추가'));
+      memoBtn.setAttribute('aria-label', rule.name + ' 비고 ' + (note ? '수정' : '추가'));
       row.appendChild(memoBtn);
       li.appendChild(row);
 
