@@ -2,9 +2,13 @@
 
 const crypto = require('node:crypto');
 
-const RULES_KEY = 'life-rule:rules';
-const CHECK_KEY = 'life-rule:check';
-const LEGACY_KEY = 'life-rule:state';
+// STORAGE_PREFIX isolates test runs from production data on the same Redis instance.
+const PREFIX = process.env.STORAGE_PREFIX || 'life-rule';
+const RULES_KEY = PREFIX + ':rules';
+const CHECK_KEY = PREFIX + ':check';
+const LEGACY_KEY = PREFIX + ':state';
+const BACKUP_PREFIX = PREFIX + ':backup:';
+const BACKUP_TTL_SEC = 60 * 60 * 24 * 30;
 const MAX_STREAK_DAYS = 3660;
 const PALETTE = ['#4f46e5', '#f59e0b', '#0d9488', '#e11d48', '#7c3aed', '#0284c7'];
 
@@ -202,9 +206,20 @@ async function replaceEntries(entries) {
   await pipeline(commands);
 }
 
+async function snapshot() {
+  try {
+    const current = await readState();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const key = BACKUP_PREFIX + stamp;
+    await command('/set/' + encodeURIComponent(key), JSON.stringify(current));
+    await command('/expire/' + encodeURIComponent(key) + '/' + BACKUP_TTL_SEC);
+  } catch (err) { /* a backup failure must not block the write */ }
+}
+
 async function replaceAll(state) {
   const norm = normalizeState(state);
   if (!norm.rules.length) norm.rules = seedRules();
+  await snapshot();
   const commands = [['DEL', CHECK_KEY], ['SET', RULES_KEY, JSON.stringify(norm.rules)]];
   Object.keys(norm.entries).forEach(function (date) {
     Object.keys(norm.entries[date]).forEach(function (ruleId) {
@@ -232,12 +247,14 @@ function readBody(req) {
 }
 
 module.exports = {
+  storagePrefix: PREFIX,
   readState: readState,
   readRules: readRules,
   readEntries: readEntries,
   writeRules: writeRules,
   setCheck: setCheck,
   replaceAll: replaceAll,
+  snapshot: snapshot,
   normalizeState: normalizeState,
   normalizeRules: normalizeRules,
   computeStreak: computeStreak,
