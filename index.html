@@ -711,6 +711,8 @@
 
   /* ---------- 메모(비고) ---------- */
 
+  var memoEditing = null; // { ruleId, text } — 작성 중인 메모는 어떤 재렌더에도 살아남는다
+
   function noteFor(dateKeyString, ruleId) {
     if (!state || !state.notes) return '';
     var day = state.notes[dateKeyString];
@@ -723,22 +725,25 @@
     return !!(day && Object.keys(day).some(function (ruleId) { return !!day[ruleId]; }));
   }
 
-  function closeMemoEditor() {
+  function removeMemoEditor() {
     var open = document.querySelector('.memo-editor');
     if (open) open.remove();
   }
 
-  function openMemoEditor(ruleId, container) {
-    closeMemoEditor();
-    var note = noteFor(selectedKey, ruleId);
+  function closeMemoEditor() {
+    removeMemoEditor();
+    memoEditing = null;
+  }
 
+  function buildMemoEditor(container, ruleId, text, focus) {
     var box = document.createElement('div');
     box.className = 'memo-editor';
+    box.dataset.memoRule = ruleId;
 
     var area = document.createElement('textarea');
     area.rows = 3;
     area.maxLength = 200;
-    area.value = note;
+    area.value = text;
     area.placeholder = '왜 못 지켰는지, 덧붙일 내용을 적어 주세요 (200자)';
     area.setAttribute('aria-label', '메모 내용');
 
@@ -749,7 +754,10 @@
     count.className = 'memo-count';
     var updateCount = function () { count.textContent = area.value.length + ' / 200'; };
     updateCount();
-    area.addEventListener('input', updateCount);
+    area.addEventListener('input', function () {
+      if (memoEditing && memoEditing.ruleId === ruleId) memoEditing.text = area.value;
+      updateCount();
+    });
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
@@ -772,7 +780,7 @@
     });
 
     actions.appendChild(count);
-    if (note) {
+    if (noteFor(selectedKey, ruleId)) {
       var remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'btn';
@@ -796,13 +804,20 @@
     box.appendChild(area);
     box.appendChild(actions);
     container.appendChild(box);
-    area.focus();
-    area.setSelectionRange(area.value.length, area.value.length);
+    if (focus) {
+      area.focus();
+      area.setSelectionRange(area.value.length, area.value.length);
+    }
+  }
+
+  function openMemoEditor(ruleId, container) {
+    removeMemoEditor();
+    memoEditing = { ruleId: ruleId, text: noteFor(selectedKey, ruleId) };
+    buildMemoEditor(container, ruleId, memoEditing.text, true);
   }
 
   function toggleMemoEditor(ruleId, container) {
-    var open = document.querySelector('.memo-editor');
-    if (open && open.parentElement === container) { open.remove(); return; }
+    if (memoEditing && memoEditing.ruleId === ruleId) { closeMemoEditor(); return; }
     openMemoEditor(ruleId, container);
   }
 
@@ -877,6 +892,10 @@
       }
 
       el.ruleList.appendChild(li);
+
+      if (memoEditing && memoEditing.ruleId === rule.id) {
+        buildMemoEditor(li, rule.id, memoEditing.text, !document.activeElement || document.activeElement.tagName !== 'TEXTAREA');
+      }
     });
   }
 
@@ -1242,7 +1261,7 @@
 
   function poll() {
     if (document.visibilityState !== 'visible') return;
-    if (busy || !state || el.dialog.open) return;
+    if (busy || !state || el.dialog.open || memoEditing) return;
     var seq = writeSeq;
     fetchState()
       .then(function () {
