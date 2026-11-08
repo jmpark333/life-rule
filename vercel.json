@@ -4,5 +4,8 @@
       "source": "/(.*)",
       "headers": [{ "key": "Cache-Control", "value": "no-store, must-revalidate" }]
     }
+  ],
+  "crons": [
+    { "path": "/api/cron-backup", "schedule": "0 14 * * *" }
   ]
 }

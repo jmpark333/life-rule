@@ -194,6 +194,18 @@
   .add-row { display: flex; gap: 6px; }
   .backup { display: flex; flex-wrap: wrap; gap: 6px; }
   .note { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
+  .backup-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .backup-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  }
+  .backup-when { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .backup-time { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .backup-kind { font-size: 11px; color: var(--muted); }
+  .backup-pager {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    margin-top: 10px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+  }
   .archived-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13.5px; }
 
   .toast {
@@ -273,11 +285,19 @@
     <section>
       <p class="section-label">백업</p>
       <div class="backup">
+        <button class="btn" id="backupNowBtn" type="button">현재 상태 백업하기</button>
         <button class="btn" id="exportBtn" type="button">JSON 내보내기</button>
         <button class="btn" id="importBtn" type="button">JSON 가져오기</button>
         <input id="importFile" type="file" accept="application/json,.json" hidden>
       </div>
-      <p class="note">기록은 서버에 저장되어 누구나 같은 내용을 보고 바꿀 수 있습니다.</p>
+      <p class="note">매일 밤 11시에 자동 백업되고 90일간 보관됩니다. 복원하면 그 시점 상태로 돌아가고, 지금 상태는 자동으로 먼저 백업됩니다.</p>
+      <ul class="backup-list" id="backupList"></ul>
+      <p class="note" id="backupEmpty" hidden>아직 백업이 없습니다.</p>
+      <div class="backup-pager" id="backupPager" hidden>
+        <button class="icon" id="backupPrev" type="button" aria-label="이전 백업 페이지">‹</button>
+        <span id="backupPageLabel">1 / 1</span>
+        <button class="icon" id="backupNext" type="button" aria-label="다음 백업 페이지">›</button>
+      </div>
     </section>
   </div>
 </dialog>
@@ -442,6 +462,13 @@
     archiveList: document.getElementById('archiveList'),
     newRuleName: document.getElementById('newRuleName'),
     addRuleBtn: document.getElementById('addRuleBtn'),
+    backupNowBtn: document.getElementById('backupNowBtn'),
+    backupList: document.getElementById('backupList'),
+    backupEmpty: document.getElementById('backupEmpty'),
+    backupPager: document.getElementById('backupPager'),
+    backupPrev: document.getElementById('backupPrev'),
+    backupNext: document.getElementById('backupNext'),
+    backupPageLabel: document.getElementById('backupPageLabel'),
     exportBtn: document.getElementById('exportBtn'),
     importBtn: document.getElementById('importBtn'),
     importFile: document.getElementById('importFile'),
@@ -1057,6 +1084,7 @@
   function openManage() {
     if (!state) return;
     rebuildManage();
+    loadBackups();
     if (typeof el.dialog.showModal === 'function') el.dialog.showModal();
     else el.dialog.setAttribute('open', '');
   }
@@ -1197,6 +1225,122 @@
     reader.readAsText(file);
   }
 
+  /* ---------- 백업 목록 ---------- */
+
+  var BACKUP_PAGE_SIZE = 5;
+  var backupItems = [];
+  var backupPage = 0;
+
+  var BACKUP_KIND = {
+    daily: '자동 · 매일 23시',
+    manual: '수동 백업',
+    'pre-restore': '복원 직전',
+    'pre-replace': '가져오기 직전',
+    auto: '변경 직전'
+  };
+
+  function formatBackupTime(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.getFullYear() + '.' + pad2(d.getMonth() + 1) + '.' + pad2(d.getDate()) +
+      ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+
+  function renderBackups() {
+    el.backupList.textContent = '';
+    var total = backupItems.length;
+    var pages = Math.max(1, Math.ceil(total / BACKUP_PAGE_SIZE));
+    if (backupPage > pages - 1) backupPage = pages - 1;
+    if (backupPage < 0) backupPage = 0;
+
+    el.backupEmpty.hidden = total > 0;
+    el.backupPager.hidden = pages <= 1;
+    el.backupPageLabel.textContent = (backupPage + 1) + ' / ' + pages;
+
+    var slice = backupItems.slice(backupPage * BACKUP_PAGE_SIZE, backupPage * BACKUP_PAGE_SIZE + BACKUP_PAGE_SIZE);
+    slice.forEach(function (item) {
+      var li = document.createElement('li');
+      li.className = 'backup-item';
+
+      var when = document.createElement('span');
+      when.className = 'backup-when';
+      var time = document.createElement('span');
+      time.className = 'backup-time';
+      time.textContent = formatBackupTime(item.createdAt);
+      var kind = document.createElement('span');
+      kind.className = 'backup-kind';
+      kind.textContent = BACKUP_KIND[item.reason] || item.reason;
+      when.appendChild(time);
+      when.appendChild(kind);
+
+      var restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'btn';
+      restore.textContent = '복원';
+      restore.addEventListener('click', function () { restoreBackup(item.id); });
+
+      li.appendChild(when);
+      li.appendChild(restore);
+      el.backupList.appendChild(li);
+    });
+  }
+
+  async function loadBackups() {
+    try {
+      var response = await fetch('/api/backups', { cache: 'no-store' });
+      var data = await response.json();
+      backupItems = (data && data.items) || [];
+      backupPage = 0;
+      renderBackups();
+    } catch (err) {
+      backupItems = [];
+      renderBackups();
+    }
+  }
+
+  async function createBackup() {
+    el.backupNowBtn.disabled = true;
+    try {
+      var response = await fetch('/api/backups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create' })
+      });
+      var data = await response.json().catch(function () { return null; });
+      if (!data || !data.ok) { toast('백업하지 못했습니다.'); return; }
+      backupItems = data.items || [];
+      backupPage = 0;
+      renderBackups();
+      toast('현재 상태를 백업했습니다.');
+    } catch (err) {
+      toast('백업하지 못했습니다.');
+    } finally {
+      el.backupNowBtn.disabled = false;
+    }
+  }
+
+  async function restoreBackup(id) {
+    var ok = window.confirm('이 시점 상태로 되돌립니다.\n지금 기록은 "복원 직전" 백업으로 남습니다.\n\n계속할까요?');
+    if (!ok) return;
+    try {
+      var response = await fetch('/api/backups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restore', id: id })
+      });
+      var data = await response.json().catch(function () { return null; });
+      if (!data || !data.ok) { toast('복원하지 못했습니다.'); return; }
+      window.location.reload();
+    } catch (err) {
+      toast('복원하지 못했습니다.');
+    }
+  }
+
+  function changeBackupPage(delta) {
+    backupPage += delta;
+    renderBackups();
+  }
+
   /* ---------- wiring ---------- */
 
   el.ruleList.addEventListener('click', function (event) {
@@ -1233,6 +1377,9 @@
   el.newRuleName.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') { event.preventDefault(); addRule(); }
   });
+  el.backupNowBtn.addEventListener('click', createBackup);
+  el.backupPrev.addEventListener('click', function () { changeBackupPage(-1); });
+  el.backupNext.addEventListener('click', function () { changeBackupPage(1); });
   el.exportBtn.addEventListener('click', exportJson);
   el.importBtn.addEventListener('click', function () { el.importFile.click(); });
   el.importFile.addEventListener('change', function () {

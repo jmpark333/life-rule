@@ -9,7 +9,7 @@ const CHECK_KEY = PREFIX + ':check';
 const NOTE_KEY = PREFIX + ':note';
 const LEGACY_KEY = PREFIX + ':state';
 const BACKUP_PREFIX = PREFIX + ':backup:';
-const BACKUP_TTL_SEC = 60 * 60 * 24 * 30;
+const BACKUP_TTL_SEC = 60 * 60 * 24 * 90;
 const MAX_STREAK_DAYS = 3660;
 const MAX_NOTE_LEN = 200;
 const PALETTE = ['#4f46e5', '#f59e0b', '#0d9488', '#e11d48', '#7c3aed', '#0284c7'];
@@ -261,20 +261,104 @@ async function replaceEntries(entries) {
   await pipeline(commands);
 }
 
-async function snapshot() {
-  try {
-    const current = await readState();
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const key = BACKUP_PREFIX + stamp;
-    await command('/set/' + encodeURIComponent(key), JSON.stringify(current));
-    await command('/expire/' + encodeURIComponent(key) + '/' + BACKUP_TTL_SEC);
-  } catch (err) { /* a backup failure must not block the write */ }
+function canonical(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  const keys = Object.keys(value).sort();
+  return '{' + keys.map(function (k) { return JSON.stringify(k) + ':' + canonical(value[k]); }).join(',') + '}';
 }
 
-async function replaceAll(state) {
+function stateFingerprint(state) {
+  return canonical({
+    rules: state.rules || [],
+    entries: state.entries || {},
+    notes: state.notes || {}
+  });
+}
+
+async function scanKeys(pattern, max) {
+  const keys = [];
+  let cursor = '0';
+  for (let page = 0; page < 20; page += 1) {
+    const reply = await command('/scan/' + cursor + '/match/' + pattern + '/count/200');
+    const batch = (reply && reply.result) || ['0', []];
+    const next = String(batch[0]);
+    (batch[1] || []).forEach(function (key) { keys.push(key); });
+    cursor = next;
+    if (cursor === '0' || keys.length >= (max || 500)) break;
+  }
+  return keys;
+}
+
+async function listBackups() {
+  const prefix = BACKUP_PREFIX;
+  const keys = await scanKeys(prefix + '*');
+  const items = [];
+  keys.forEach(function (key) {
+    const id = String(key).slice(prefix.length);
+    const match = /^(\d+)-([a-z-]+)$/.exec(id);
+    if (!match) return; // 예전 형식(ISO)은 만료로 정리된다
+    items.push({ id: id, at: Number(match[1]), createdAt: new Date(Number(match[1])).toISOString(), reason: match[2] });
+  });
+  items.sort(function (a, b) { return b.at - a.at; });
+  return items;
+}
+
+async function readBackup(id) {
+  if (!/^\d+-[a-z-]+$/.test(String(id || ''))) throw new Error('bad-backup-id');
+  const reply = await command('/get/' + encodeURIComponent(BACKUP_PREFIX + id));
+  if (!reply || reply.result == null) return null;
+  return JSON.parse(reply.result);
+}
+
+async function latestBackupState() {
+  const items = await listBackups();
+  for (let i = 0; i < Math.min(items.length, 3); i += 1) {
+    const state = await readBackup(items[i].id).catch(function () { return null; });
+    if (state) return state;
+  }
+  return null;
+}
+
+async function snapshot(reason, options) {
+  const label = reason || 'auto';
+  const opts = options || {};
+  try {
+    const current = await readState();
+    if (opts.skipIfSame) {
+      const latest = await latestBackupState();
+      if (latest && stateFingerprint(latest) === stateFingerprint(current)) {
+        return { created: false, reason: 'unchanged' };
+      }
+    }
+    const at = Date.now();
+    const key = BACKUP_PREFIX + at + '-' + label;
+    const payload = {
+      version: 1,
+      rules: current.rules,
+      entries: current.entries,
+      notes: current.notes,
+      meta: { reason: label, createdAt: new Date(at).toISOString() }
+    };
+    await command('/set/' + encodeURIComponent(key), JSON.stringify(payload));
+    await command('/expire/' + encodeURIComponent(key) + '/' + BACKUP_TTL_SEC);
+    return { created: true, id: at + '-' + label, createdAt: payload.meta.createdAt };
+  } catch (err) {
+    return { created: false, reason: 'error' };
+  }
+}
+
+async function restoreBackup(id) {
+  const state = await readBackup(id);
+  if (!state) throw new Error('backup-not-found');
+  await replaceAll(state, 'pre-restore');
+  return readState();
+}
+
+async function replaceAll(state, reason) {
   const norm = normalizeState(state);
   if (!norm.rules.length) norm.rules = seedRules();
-  await snapshot();
+  await snapshot(reason || 'pre-replace');
   const commands = [['DEL', CHECK_KEY], ['DEL', NOTE_KEY], ['SET', RULES_KEY, JSON.stringify(norm.rules)]];
   Object.keys(norm.entries).forEach(function (date) {
     Object.keys(norm.entries[date]).forEach(function (ruleId) {
@@ -318,6 +402,9 @@ module.exports = {
   setNote: setNote,
   replaceAll: replaceAll,
   snapshot: snapshot,
+  listBackups: listBackups,
+  readBackup: readBackup,
+  restoreBackup: restoreBackup,
   normalizeState: normalizeState,
   normalizeRules: normalizeRules,
   normalizeNotes: normalizeNotes,
