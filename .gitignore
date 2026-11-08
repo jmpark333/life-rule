@@ -1,3 +1,5 @@
 .vercel
 .env*
 __pycache__/
+t.html
+t2.html
