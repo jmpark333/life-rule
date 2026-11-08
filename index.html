@@ -184,6 +184,15 @@
   }
   .dlg-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
   .dlg-body { padding: 16px; display: flex; flex-direction: column; gap: 18px; max-height: 70vh; overflow: auto; }
+  .tabs { display: flex; gap: 4px; padding: 10px 16px 0; }
+  .tab {
+    font: inherit; font-size: 12.5px; padding: 6px 12px; border-radius: 999px;
+    border: 0; background: var(--soft); color: var(--muted); cursor: pointer;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.on { background: #111827; color: #fff; font-weight: 600; }
+  .tab:focus-visible { outline: 2px solid #9ca3af; outline-offset: 2px; }
+  .tabpanel[hidden] { display: none; }
   .section-label { margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
   .manage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .manage-list li { display: flex; align-items: center; gap: 6px; }
@@ -222,7 +231,7 @@
     <h1>life-rule</h1>
     <div class="topbar-right">
       <span class="synced" id="syncNote"></span>
-      <button class="btn ghost" id="manageBtn" type="button" disabled>규칙 관리</button>
+      <button class="btn ghost" id="manageBtn" type="button" disabled>관리</button>
     </div>
   </header>
 
@@ -235,7 +244,7 @@
       <button class="btn ghost" id="todayBtn" type="button" hidden>오늘로</button>
     </div>
     <ul class="rules" id="ruleList"></ul>
-    <p class="empty" id="ruleEmpty" hidden>규칙이 없습니다. 오른쪽 위 "규칙 관리"에서 추가해 주세요.</p>
+    <p class="empty" id="ruleEmpty" hidden>규칙이 없습니다. 오른쪽 위 "관리"에서 추가해 주세요.</p>
     <p class="empty" id="loadError" hidden>서버에서 기록을 불러오지 못했습니다. <button class="btn" id="retryBtn" type="button">다시 시도</button></p>
   </section>
 
@@ -264,31 +273,31 @@
 
 <dialog id="manageDialog">
   <form method="dialog" class="dlg-head">
-    <h2>규칙 관리</h2>
+    <h2>관리</h2>
     <button class="icon" value="close" aria-label="닫기">✕</button>
   </form>
+  <div class="tabs" id="manageTabs" role="tablist" aria-label="관리 항목">
+    <button class="tab on" type="button" role="tab" aria-selected="true" aria-controls="panel-rules" data-tab="rules">규칙</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-backup" data-tab="backup">백업</button>
+    <button class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-data" data-tab="data">데이터</button>
+  </div>
   <div class="dlg-body">
-    <section>
+    <section class="tabpanel" id="panel-rules" role="tabpanel" aria-label="규칙">
       <p class="section-label">규칙</p>
       <ul class="manage-list" id="manageList"></ul>
-    </section>
-    <section>
-      <div class="add-row">
+      <div class="add-row" style="margin-top:10px">
         <input id="newRuleName" type="text" maxlength="40" placeholder="새 규칙을 입력해 주세요 (예: 하루 물 2L)" aria-label="새 규칙 이름">
         <button class="btn" id="addRuleBtn" type="button">추가</button>
       </div>
+      <div id="archiveSection" style="margin-top:16px" hidden>
+        <p class="section-label">보관함</p>
+        <ul class="manage-list" id="archiveList"></ul>
+      </div>
     </section>
-    <section id="archiveSection" hidden>
-      <p class="section-label">보관함</p>
-      <ul class="manage-list" id="archiveList"></ul>
-    </section>
-    <section>
-      <p class="section-label">백업</p>
+
+    <section class="tabpanel" id="panel-backup" role="tabpanel" aria-label="백업" hidden>
       <div class="backup">
         <button class="btn" id="backupNowBtn" type="button">현재 상태 백업하기</button>
-        <button class="btn" id="exportBtn" type="button">JSON 내보내기</button>
-        <button class="btn" id="importBtn" type="button">JSON 가져오기</button>
-        <input id="importFile" type="file" accept="application/json,.json" hidden>
       </div>
       <p class="note">매일 밤 11시에 자동 백업되고 90일간 보관됩니다. 복원하면 그 시점 상태로 돌아가고, 지금 상태는 자동으로 먼저 백업됩니다.</p>
       <ul class="backup-list" id="backupList"></ul>
@@ -298,6 +307,16 @@
         <span id="backupPageLabel">1 / 1</span>
         <button class="icon" id="backupNext" type="button" aria-label="다음 백업 페이지">›</button>
       </div>
+    </section>
+
+    <section class="tabpanel" id="panel-data" role="tabpanel" aria-label="데이터" hidden>
+      <p class="section-label">데이터</p>
+      <div class="backup">
+        <button class="btn" id="exportBtn" type="button">JSON 내보내기</button>
+        <button class="btn" id="importBtn" type="button">JSON 가져오기</button>
+        <input id="importFile" type="file" accept="application/json,.json" hidden>
+      </div>
+      <p class="note">내보낸 파일은 이 기기에 저장됩니다. 가져오기는 현재 규칙·체크·메모를 파일 내용으로 바꾸며, 바꾸기 직전 상태는 자동으로 백업됩니다.</p>
     </section>
   </div>
 </dialog>
@@ -457,6 +476,10 @@
     nextMonth: document.getElementById('nextMonth'),
     manageBtn: document.getElementById('manageBtn'),
     dialog: document.getElementById('manageDialog'),
+    manageTabs: document.getElementById('manageTabs'),
+    panelRules: document.getElementById('panel-rules'),
+    panelBackup: document.getElementById('panel-backup'),
+    panelData: document.getElementById('panel-data'),
     manageList: document.getElementById('manageList'),
     archiveSection: document.getElementById('archiveSection'),
     archiveList: document.getElementById('archiveList'),
@@ -1081,10 +1104,23 @@
     return palette[total % palette.length];
   }
 
+  function showTab(name) {
+    var tabs = el.manageTabs.querySelectorAll('.tab');
+    Array.prototype.forEach.call(tabs, function (tab) {
+      var on = tab.dataset.tab === name;
+      tab.classList.toggle('on', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    el.panelRules.hidden = name !== 'rules';
+    el.panelBackup.hidden = name !== 'backup';
+    el.panelData.hidden = name !== 'data';
+    if (name === 'backup') loadBackups();
+  }
+
   function openManage() {
     if (!state) return;
     rebuildManage();
-    loadBackups();
+    showTab('rules');
     if (typeof el.dialog.showModal === 'function') el.dialog.showModal();
     else el.dialog.setAttribute('open', '');
   }
@@ -1373,6 +1409,10 @@
 
   el.todayBtn.addEventListener('click', function () { selectDate(todayKey); });
   el.manageBtn.addEventListener('click', openManage);
+  el.manageTabs.addEventListener('click', function (event) {
+    var tab = event.target.closest('.tab');
+    if (tab) showTab(tab.dataset.tab);
+  });
   el.addRuleBtn.addEventListener('click', addRule);
   el.newRuleName.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') { event.preventDefault(); addRule(); }
