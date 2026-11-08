@@ -108,6 +108,27 @@
   }
   .quote .quote-by { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
 
+  body.sheet-open { overflow: hidden; }
+  .sheet-backdrop {
+    position: fixed; inset: 0; background: rgba(17, 24, 39, 0.28);
+    z-index: 40; animation: sheetFade 0.18s ease;
+  }
+  @keyframes sheetFade { from { opacity: 0; } to { opacity: 1; } }
+  .date-sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 41;
+    background: var(--card); border-radius: 20px 20px 0 0;
+    box-shadow: 0 -10px 30px rgba(17, 24, 39, 0.18);
+    padding: 8px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+    max-height: 78vh; overflow-y: auto;
+    animation: sheetUp 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  @keyframes sheetUp { from { transform: translateY(24px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+  .sheet-grab { width: 40px; height: 4px; border-radius: 999px; background: var(--line); margin: 2px auto 10px; }
+  .sheet-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  @media (prefers-reduced-motion: reduce) {
+    .date-sheet, .sheet-backdrop { animation: none; }
+  }
+
   .confetti-canvas {
     position: fixed; inset: 0; width: 100%; height: 100%;
     pointer-events: none; z-index: 60;
@@ -322,6 +343,19 @@
 </dialog>
 
 
+<div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+<section class="date-sheet" id="dateSheet" role="dialog" aria-modal="true" aria-labelledby="sheetLabel" hidden>
+  <div class="sheet-grab" aria-hidden="true"></div>
+  <div class="sheet-head">
+    <div>
+      <p class="eyebrow" id="sheetEyebrow">지난 기록</p>
+      <p class="daydate" id="sheetLabel">—</p>
+    </div>
+    <button class="btn ghost" id="sheetClose" type="button">닫기</button>
+  </div>
+  <ul class="rules" id="sheetList"></ul>
+</section>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -496,6 +530,12 @@
     importBtn: document.getElementById('importBtn'),
     importFile: document.getElementById('importFile'),
     syncNote: document.getElementById('syncNote'),
+    dateSheet: document.getElementById('dateSheet'),
+    sheetBackdrop: document.getElementById('sheetBackdrop'),
+    sheetEyebrow: document.getElementById('sheetEyebrow'),
+    sheetLabel: document.getElementById('sheetLabel'),
+    sheetList: document.getElementById('sheetList'),
+    sheetClose: document.getElementById('sheetClose'),
     toast: document.getElementById('toast')
   };
 
@@ -761,7 +801,8 @@
 
   /* ---------- 메모(비고) ---------- */
 
-  var memoEditing = null; // { ruleId, text } — 작성 중인 메모는 어떤 재렌더에도 살아남는다
+  var memoEditing = null; // { dateKey, ruleId, text } — 작성 중인 메모는 어떤 재렌더에도 살아남는다
+  var sheetKey = null;    // 바텀시트에 띄운 날짜
 
   function noteFor(dateKeyString, ruleId) {
     if (!state || !state.notes) return '';
@@ -785,7 +826,7 @@
     memoEditing = null;
   }
 
-  function buildMemoEditor(container, ruleId, text, focus) {
+  function buildMemoEditor(container, dateKeyString, ruleId, text, focus) {
     var box = document.createElement('div');
     box.className = 'memo-editor';
     box.dataset.memoRule = ruleId;
@@ -805,7 +846,7 @@
     var updateCount = function () { count.textContent = area.value.length + ' / 200'; };
     updateCount();
     area.addEventListener('input', function () {
-      if (memoEditing && memoEditing.ruleId === ruleId) memoEditing.text = area.value;
+      if (memoEditing && memoEditing.ruleId === ruleId && memoEditing.dateKey === dateKeyString) memoEditing.text = area.value;
       updateCount();
     });
 
@@ -821,7 +862,7 @@
     save.textContent = '저장';
     save.addEventListener('click', async function () {
       save.disabled = true;
-      var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: area.value }, '메모를 저장하지 못했습니다.');
+      var ok = await mutate({ action: 'note', date: dateKeyString, ruleId: ruleId, text: area.value }, '메모를 저장하지 못했습니다.');
       save.disabled = false;
       if (ok) {
         closeMemoEditor();
@@ -830,14 +871,14 @@
     });
 
     actions.appendChild(count);
-    if (noteFor(selectedKey, ruleId)) {
+    if (noteFor(dateKeyString, ruleId)) {
       var remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'btn';
       remove.textContent = '삭제';
       remove.addEventListener('click', async function () {
         remove.disabled = true;
-        var ok = await mutate({ action: 'note', date: selectedKey, ruleId: ruleId, text: '' }, '메모를 지우지 못했습니다.');
+        var ok = await mutate({ action: 'note', date: dateKeyString, ruleId: ruleId, text: '' }, '메모를 지우지 못했습니다.');
         remove.disabled = false;
         if (ok) { closeMemoEditor(); toast('메모를 지웠습니다.'); }
       });
@@ -860,35 +901,29 @@
     }
   }
 
-  function openMemoEditor(ruleId, container) {
+  function openMemoEditor(dateKeyString, ruleId, container) {
     removeMemoEditor();
-    memoEditing = { ruleId: ruleId, text: noteFor(selectedKey, ruleId) };
-    buildMemoEditor(container, ruleId, memoEditing.text, true);
+    memoEditing = { dateKey: dateKeyString, ruleId: ruleId, text: noteFor(dateKeyString, ruleId) };
+    buildMemoEditor(container, dateKeyString, ruleId, memoEditing.text, true);
   }
 
-  function toggleMemoEditor(ruleId, container) {
-    if (memoEditing && memoEditing.ruleId === ruleId) { closeMemoEditor(); return; }
-    openMemoEditor(ruleId, container);
+  function toggleMemoEditor(dateKeyString, ruleId, container) {
+    if (memoEditing && memoEditing.ruleId === ruleId && memoEditing.dateKey === dateKeyString) {
+      closeMemoEditor();
+      return;
+    }
+    openMemoEditor(dateKeyString, ruleId, container);
   }
 
-  function renderDayCard() {
-    var date = parseKey(selectedKey);
-    el.dayEyebrow.textContent = isToday() ? '오늘' : '지난 기록';
-    el.dayLabel.textContent = date.getFullYear() + '년 ' + (date.getMonth() + 1) + '월 ' +
-      date.getDate() + '일 ' + WEEKDAYS[date.getDay()] + '요일';
-    el.todayBtn.hidden = isToday();
-    el.loadError.hidden = !!state;
-
-    var rules = activeRules();
-    el.ruleList.textContent = '';
-    el.ruleEmpty.hidden = !state || rules.length > 0;
-
+  function renderRuleRows(container, dateKeyString) {
+    var date = parseKey(dateKeyString);
+    container.textContent = '';
     if (!state) return;
 
-    rules.forEach(function (rule) {
-      var checked = isChecked(state.entries, selectedKey, rule.id);
+    activeRules().forEach(function (rule) {
+      var checked = isChecked(state.entries, dateKeyString, rule.id);
       var streak = computeStreak(state.entries, rule.id, date);
-      var note = noteFor(selectedKey, rule.id);
+      var note = noteFor(dateKeyString, rule.id);
 
       var li = document.createElement('li');
       li.className = 'rule-item';
@@ -903,6 +938,7 @@
       button.setAttribute('aria-pressed', checked ? 'true' : 'false');
       button.setAttribute('aria-label', rule.name + ' — ' + (checked ? '지킴' : '안 지킴'));
       button.dataset.ruleId = rule.id;
+      button.dataset.date = dateKeyString;
 
       var dot = document.createElement('span');
       dot.className = 'rdot';
@@ -930,6 +966,7 @@
       memoBtn.className = 'memo-btn' + (note ? ' has-note' : '');
       memoBtn.textContent = note ? '메모 ✓' : '메모';
       memoBtn.dataset.memoRule = rule.id;
+      memoBtn.dataset.date = dateKeyString;
       memoBtn.setAttribute('aria-label', rule.name + ' 메모 ' + (note ? '수정' : '추가'));
       row.appendChild(memoBtn);
       li.appendChild(row);
@@ -941,12 +978,52 @@
         li.appendChild(noteText);
       }
 
-      el.ruleList.appendChild(li);
+      container.appendChild(li);
 
-      if (memoEditing && memoEditing.ruleId === rule.id) {
-        buildMemoEditor(li, rule.id, memoEditing.text, !document.activeElement || document.activeElement.tagName !== 'TEXTAREA');
+      if (memoEditing && memoEditing.dateKey === dateKeyString && memoEditing.ruleId === rule.id) {
+        buildMemoEditor(li, dateKeyString, rule.id, memoEditing.text,
+          !document.activeElement || document.activeElement.tagName !== 'TEXTAREA');
       }
     });
+  }
+
+  function renderDayCard() {
+    var date = parseKey(selectedKey);
+    el.dayEyebrow.textContent = isToday() ? '오늘' : '지난 기록';
+    el.dayLabel.textContent = date.getFullYear() + '년 ' + (date.getMonth() + 1) + '월 ' +
+      date.getDate() + '일 ' + WEEKDAYS[date.getDay()] + '요일';
+    el.todayBtn.hidden = isToday();
+    el.loadError.hidden = !!state;
+    el.ruleEmpty.hidden = !state || activeRules().length > 0;
+
+    renderRuleRows(el.ruleList, selectedKey);
+  }
+
+  function renderSheet() {
+    if (!sheetKey) return;
+    var date = parseKey(sheetKey);
+    el.sheetEyebrow.textContent = sheetKey === todayKey ? '오늘' : '지난 기록';
+    el.sheetLabel.textContent = date.getFullYear() + '년 ' + (date.getMonth() + 1) + '월 ' +
+      date.getDate() + '일 ' + WEEKDAYS[date.getDay()] + '요일';
+    renderRuleRows(el.sheetList, sheetKey);
+  }
+
+  function openSheet(dateKeyString) {
+    if (!state) return;
+    sheetKey = dateKeyString;
+    renderSheet();
+    el.dateSheet.hidden = false;
+    el.sheetBackdrop.hidden = false;
+    document.body.classList.add('sheet-open');
+  }
+
+  function closeSheet() {
+    if (!sheetKey) return;
+    closeMemoEditor();
+    sheetKey = null;
+    el.dateSheet.hidden = true;
+    el.sheetBackdrop.hidden = true;
+    document.body.classList.remove('sheet-open');
   }
 
   function renderCalendar() {
@@ -1052,6 +1129,7 @@
     renderQuote();
     renderCalendar();
     renderLegend();
+    renderSheet();
   }
 
   /* ---------- actions ---------- */
@@ -1065,16 +1143,16 @@
     renderAll();
   }
 
-  async function toggleRule(ruleId, origin) {
-    if (!state || selectedKey > todayKey) return;
-    var nextValue = !isChecked(state.entries, selectedKey, ruleId);
-    var ok = await mutate({ action: 'check', date: selectedKey, ruleId: ruleId, value: nextValue }, '체크를 저장하지 못했습니다.');
+  async function toggleRule(dateKeyString, ruleId, origin) {
+    if (!state || dateKeyString > todayKey) return;
+    var nextValue = !isChecked(state.entries, dateKeyString, ruleId);
+    var ok = await mutate({ action: 'check', date: dateKeyString, ruleId: ruleId, value: nextValue }, '체크를 저장하지 못했습니다.');
     if (!ok) return;
 
     var rules = activeRules();
     var word = dayWord();
     if (nextValue) {
-      var done = doneCount(selectedKey);
+      var done = doneCount(dateKeyString);
       if (rules.length > 0 && done === rules.length) {
         praiseOverride = { emoji: '🏅', text: pickPraise(ALL_DONE_PRAISES), celebrate: true, pop: true };
         toast(word + ' ' + rules.length + '개 모두 달성했어요! 🎉');
@@ -1082,11 +1160,11 @@
       } else {
         praiseOverride = {
           emoji: '✨',
-          text: pickPraise(isToday() ? PRAISES : PAST_PRAISES),
+          text: pickPraise(dateKeyString === todayKey ? PRAISES : PAST_PRAISES),
           celebrate: false,
           pop: true
         };
-        burstConfetti(origin, { count: isToday() ? 60 : 28, power: isToday() ? 1 : 0.8 });
+        burstConfetti(origin, { count: dateKeyString === todayKey ? 60 : 28, power: dateKeyString === todayKey ? 1 : 0.8 });
       }
     } else {
       praiseOverride = { emoji: '🌿', text: pickPraise(UNDO_PRAISES), celebrate: false, pop: true };
@@ -1379,22 +1457,37 @@
 
   /* ---------- wiring ---------- */
 
-  el.ruleList.addEventListener('click', function (event) {
+  function handleRuleAreaClick(event) {
     var memoBtn = event.target.closest('.memo-btn');
     if (memoBtn) {
-      toggleMemoEditor(memoBtn.dataset.memoRule, memoBtn.closest('.rule-item'));
+      toggleMemoEditor(memoBtn.dataset.date, memoBtn.dataset.memoRule, memoBtn.closest('.rule-item'));
       return;
     }
     var button = event.target.closest('.rule-btn');
     if (!button) return;
     var rect = button.getBoundingClientRect();
-    toggleRule(button.dataset.ruleId, { x: rect.right - 24, y: rect.top + rect.height / 2 });
-  });
+    toggleRule(button.dataset.date, button.dataset.ruleId, { x: rect.right - 24, y: rect.top + rect.height / 2 });
+  }
+
+  el.ruleList.addEventListener('click', handleRuleAreaClick);
+  el.sheetList.addEventListener('click', handleRuleAreaClick);
 
   el.calGrid.addEventListener('click', function (event) {
     var cell = event.target.closest('.cell');
     if (!cell || cell.disabled || !cell.dataset.date) return;
-    selectDate(cell.dataset.date);
+    var key = cell.dataset.date;
+    if (key === todayKey) {
+      closeSheet();
+      selectDate(key);
+    } else {
+      openSheet(key);
+    }
+  });
+
+  el.sheetClose.addEventListener('click', closeSheet);
+  el.sheetBackdrop.addEventListener('click', closeSheet);
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && sheetKey) { event.preventDefault(); closeSheet(); }
   });
 
   el.prevMonth.addEventListener('click', function () {
